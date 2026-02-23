@@ -1,0 +1,888 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <title>Figma2Assets Export</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+    }
+
+    body {
+      margin: 0;
+      padding: 12px;
+      display: grid;
+      gap: 10px;
+    }
+
+    .row {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    label {
+      display: grid;
+      gap: 4px;
+      font-size: 12px;
+    }
+
+    input {
+      border: 1px solid #666;
+      border-radius: 8px;
+      padding: 6px 8px;
+      min-width: 180px;
+      background: transparent;
+      color: inherit;
+    }
+
+    button {
+      border: 1px solid #666;
+      border-radius: 8px;
+      padding: 8px 12px;
+      cursor: pointer;
+      background: transparent;
+    }
+
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    #status {
+      font-size: 12px;
+      line-height: 1.4;
+      white-space: pre-wrap;
+      border: 1px solid #666;
+      border-radius: 8px;
+      padding: 10px;
+      min-height: 140px;
+      overflow: auto;
+    }
+  </style>
+  <!--
+    При showUI(__html__) относительные локальные script/src не гарантированно доступны.
+    Поэтому JSZip подключаем абсолютным URL.
+  -->
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+</head>
+<body>
+  <div class="row">
+    <label>
+      packName
+      <input id="packNameInput" type="text" placeholder="Например: atlas" />
+    </label>
+    <label>
+      atlasBasePath
+      <input
+        id="atlasBasePathInput"
+        type="text"
+        value="./assets/atlases/"
+        placeholder="./assets/atlases/"
+      />
+    </label>
+  </div>
+
+  <div class="row">
+    <button id="downloadZip" disabled>Скачать ZIP</button>
+    <button id="retry">Повторить экспорт</button>
+    <button id="close">Закрыть</button>
+  </div>
+
+  <div id="status">Ожидание данных из Figma…</div>
+  <script>
+    /**
+     * Текущее состояние экспорта, пришедшее из code.js.
+     */
+    let exportPayload = null;
+    const DEFAULT_ATLAS_BASE_PATH = "./assets/atlases/";
+
+    const packNameInput = document.getElementById("packNameInput");
+    const atlasBasePathInput = document.getElementById("atlasBasePathInput");
+    const downloadZipButton = document.getElementById("downloadZip");
+    const retryButton = document.getElementById("retry");
+    const closeButton = document.getElementById("close");
+    const statusNode = document.getElementById("status");
+    atlasBasePathInput.value = DEFAULT_ATLAS_BASE_PATH;
+    let currentStatusText = "Ожидание данных из Figma…";
+    const statusLogLines = [];
+
+    /**
+     * Простые настройки встроенного atlas-пэкера.
+     * padding нужен, чтобы спрайты не прилипали друг к другу.
+     */
+    const ATLAS_PACKER_OPTIONS = Object.freeze({
+      padding: 2,
+      minAtlasSize: 8,
+    });
+
+    /**
+     * Безопасно отправляет сообщение в основной поток плагина.
+     */
+    function postToPlugin(message) {
+      parent.postMessage({ pluginMessage: message }, "*");
+    }
+
+    /**
+     * Пишет текст статуса в UI.
+     */
+    function setStatus(text) {
+      currentStatusText = String(text || "");
+      renderStatus();
+    }
+
+    /**
+     * Добавляет строку в блок "Лог" внизу статуса.
+     */
+    function appendLog(text) {
+      const value = String(text || "").trim();
+      if (!value) return;
+      statusLogLines.push(value);
+      if (statusLogLines.length > 120) {
+        statusLogLines.shift();
+      }
+      renderStatus();
+    }
+
+    /**
+     * Рендерит основной статус и накопленный лог.
+     */
+    function renderStatus() {
+      const base = currentStatusText || "";
+      const logText = statusLogLines.length > 0
+        ? `\n\nЛог:\n${statusLogLines.join("\n")}`
+        : "";
+      statusNode.textContent = `${base}${logText}`;
+      statusNode.scrollTop = statusNode.scrollHeight;
+    }
+
+    /**
+     * Диагностика состояния подключения JSZip.
+     */
+    function describeJsZipState() {
+      const scriptSources = Array.from(document.scripts || [])
+        .map((item) => item.getAttribute("src") || "<inline>")
+        .join(", ");
+      return `window.JSZip=${typeof window.JSZip}; globalThis.JSZip=${typeof globalThis.JSZip}; scripts=[${scriptSources}]`;
+    }
+
+    /**
+     * Преобразует имя в безопасный slug для packName и файлов.
+     */
+    function slugify(input) {
+      const value = String(input || "")
+        .normalize("NFKD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/[^a-zA-Z0-9._-]+/g, "-")
+        .replace(/-+/g, "-")
+        .replace(/^-|-$/g, "")
+        .toLowerCase();
+      return value || "pack";
+    }
+
+    /**
+     * Нормализует базовый путь atlas для генерации preload-конфига.
+     * По требованию это должен быть относительный путь загрузки.
+     */
+    function normalizeAtlasBasePath(input) {
+      const raw = String(input || "").trim();
+      let next = (raw || DEFAULT_ATLAS_BASE_PATH).replace(/\\/g, "/");
+
+      if (!next.startsWith("./") && !next.startsWith("../")) {
+        if (next.startsWith("/")) {
+          next = `.${next}`;
+        } else {
+          next = `./${next}`;
+        }
+      }
+
+      if (!next.endsWith("/")) {
+        next += "/";
+      }
+
+      return next;
+    }
+
+    /**
+     * Собирает полный путь к atlas-файлу от базового пути и имени файла.
+     */
+    function buildAtlasFilePath(basePath, fileName) {
+      const cleanFileName = String(fileName || "").replace(/^\/+/, "");
+      return `${normalizeAtlasBasePath(basePath)}${cleanFileName}`;
+    }
+
+    /**
+     * camelCase для генерации имен переменных.
+     */
+    function toCamelCase(input) {
+      const safe = slugify(input);
+      const tokens = safe
+        .split(/[^a-zA-Z0-9]+/)
+        .filter(Boolean)
+        .map((token) => token.toLowerCase());
+
+      if (tokens.length === 0) return "asset";
+      const [first, ...rest] = tokens;
+      const camel = first + rest.map((token) => token.charAt(0).toUpperCase() + token.slice(1)).join("");
+      if (/^[0-9]/.test(camel)) return `n${camel}`;
+      return camel;
+    }
+
+    /**
+     * PascalCase для имен классов сцены.
+     */
+    function toPascalCase(input) {
+      const camel = toCamelCase(input);
+      return camel.charAt(0).toUpperCase() + camel.slice(1);
+    }
+
+    /**
+     * Вычисляет padding nine-slice из имени узла/фрейма.
+     * Формат: ...nine.20
+     */
+    function detectNinePadding(rawName) {
+      const match = String(rawName || "").trim().match(/(?:^|[._-])nine\.(\d+)$/i);
+      if (!match) return null;
+      const parsed = Number(match[1]);
+      if (!Number.isFinite(parsed)) return null;
+      return parsed;
+    }
+
+    /**
+     * Скачивает Blob как файл.
+     */
+    function downloadBlob(blob, fileName) {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = fileName;
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    /**
+     * Преобразует Uint8Array PNG в объект изображения для Canvas.
+     */
+    async function bytesToDrawableImage(bytes) {
+      const blob = new Blob([bytes], { type: "image/png" });
+
+      if (typeof createImageBitmap === "function") {
+        const bitmap = await createImageBitmap(blob);
+        return {
+          width: bitmap.width,
+          height: bitmap.height,
+          drawable: bitmap,
+          dispose: () => {
+            if (typeof bitmap.close === "function") bitmap.close();
+          },
+        };
+      }
+
+      // Фоллбек для сред без createImageBitmap.
+      const image = await new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = () => reject(new Error("Failed to decode PNG"));
+        img.src = URL.createObjectURL(blob);
+      });
+
+      return {
+        width: image.width,
+        height: image.height,
+        drawable: image,
+        dispose: () => {
+          if (image.src && image.src.startsWith("blob:")) {
+            URL.revokeObjectURL(image.src);
+          }
+        },
+      };
+    }
+
+    /**
+     * Переводит число в следующую степень двойки.
+     * Это совместимо с типичными ожиданиями atlas-текстур.
+     */
+    function nextPow2(value) {
+      let result = 1;
+      const safe = Math.max(1, Math.ceil(value));
+      while (result < safe) result *= 2;
+      return result;
+    }
+
+    /**
+     * Оценивает разумную ширину atlas по суммарной площади изображений.
+     */
+    function estimateAtlasWidth(images, padding) {
+      const area = images.reduce((sum, item) => sum + item.width * item.height, 0);
+      const widest = images.reduce((max, item) => Math.max(max, item.width), 1);
+      const target = Math.sqrt(area);
+      const guessed = Math.max(target * 1.4, widest + padding * 2);
+      return nextPow2(guessed);
+    }
+
+    /**
+     * Простой shelf-пэкер: раскладывает изображения по строкам слева направо.
+     *
+     * Плюсы:
+     * - очень простой и надежный;
+     * - предсказуемый результат.
+     *
+     * Минусы:
+     * - не самый плотный packing.
+     */
+    function packImagesShelf(images, options) {
+      const padding = options.padding;
+      const minAtlasSize = options.minAtlasSize;
+
+      // Сортировка по высоте обычно дает более компактный результат для shelf-алгоритма.
+      const sorted = [...images].sort((a, b) => b.height - a.height);
+
+      let maxRowWidth = estimateAtlasWidth(sorted, padding);
+      const requiredMinWidth = sorted.reduce((max, item) => Math.max(max, item.width + padding * 2), 1);
+      maxRowWidth = Math.max(maxRowWidth, nextPow2(requiredMinWidth));
+
+      let x = padding;
+      let y = padding;
+      let rowHeight = 0;
+      let usedMaxX = minAtlasSize;
+      let usedMaxY = minAtlasSize;
+
+      const placements = [];
+
+      sorted.forEach((item) => {
+        // Если элемент не влезает в текущую строку, переходим на новую.
+        if (x + item.width + padding > maxRowWidth && rowHeight > 0) {
+          x = padding;
+          y += rowHeight + padding;
+          rowHeight = 0;
+        }
+
+        placements.push({
+          ...item,
+          atlasX: x,
+          atlasY: y,
+        });
+
+        x += item.width + padding;
+        rowHeight = Math.max(rowHeight, item.height);
+        usedMaxX = Math.max(usedMaxX, x);
+        usedMaxY = Math.max(usedMaxY, y + rowHeight + padding);
+      });
+
+      const atlasWidth = nextPow2(Math.max(minAtlasSize, usedMaxX));
+      const atlasHeight = nextPow2(Math.max(minAtlasSize, usedMaxY));
+
+      return {
+        atlasWidth,
+        atlasHeight,
+        placements,
+      };
+    }
+
+    /**
+     * Рисует готовый atlas в canvas и возвращает PNG bytes.
+     */
+    async function renderAtlasPng(packResult) {
+      const canvas = document.createElement("canvas");
+      canvas.width = packResult.atlasWidth;
+      canvas.height = packResult.atlasHeight;
+
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        throw new Error("Canvas 2D context is not available");
+      }
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      packResult.placements.forEach((placement) => {
+        ctx.drawImage(placement.drawable, placement.atlasX, placement.atlasY);
+      });
+
+      const blob = await new Promise((resolve) => {
+        canvas.toBlob((resultBlob) => resolve(resultBlob), "image/png");
+      });
+
+      if (!blob) {
+        throw new Error("Failed to create atlas PNG blob");
+      }
+
+      const buffer = await blob.arrayBuffer();
+      return new Uint8Array(buffer);
+    }
+
+    /**
+     * Формирует JSON atlas в формате Phaser3.
+     */
+    function buildPhaserAtlasJson(props) {
+      const { packName, packResult } = props;
+      const frames = {};
+
+      packResult.placements.forEach((placement) => {
+        frames[placement.fileName] = {
+          frame: {
+            x: placement.atlasX,
+            y: placement.atlasY,
+            w: placement.width,
+            h: placement.height,
+          },
+          rotated: false,
+          trimmed: false,
+          spriteSourceSize: {
+            x: 0,
+            y: 0,
+            w: placement.width,
+            h: placement.height,
+          },
+          sourceSize: {
+            w: placement.width,
+            h: placement.height,
+          },
+        };
+      });
+
+      return {
+        frames,
+        meta: {
+          app: "figma2assets",
+          version: "1.0",
+          image: `${packName}.png`,
+          format: "RGBA8888",
+          size: {
+            w: packResult.atlasWidth,
+            h: packResult.atlasHeight,
+          },
+          scale: "1",
+        },
+      };
+    }
+
+    /**
+     * Преобразует экспортированные PNG в структуру для пэкера.
+     */
+    async function prepareImagesForPacking(files) {
+      const prepared = [];
+
+      for (let index = 0; index < files.length; index += 1) {
+        const file = files[index];
+        setStatus(`Подготовка PNG для atlas… ${index + 1}/${files.length}\n${file.fileName}`);
+
+        const decoded = await bytesToDrawableImage(file.bytes);
+        prepared.push({
+          fileName: file.fileName,
+          bytes: file.bytes,
+          width: decoded.width,
+          height: decoded.height,
+          drawable: decoded.drawable,
+          dispose: decoded.dispose,
+        });
+      }
+
+      return prepared;
+    }
+
+    /**
+     * Освобождает ресурсы изображений после рендера atlas.
+     */
+    function disposePreparedImages(images) {
+      images.forEach((item) => {
+        if (typeof item.dispose === "function") {
+          item.dispose();
+        }
+      });
+    }
+
+    /**
+     * Создает уникальное camelCase имя ассета для TS.
+     */
+    function createUniqueAssetKey(rawName, used) {
+      const base = toCamelCase(rawName);
+      let next = base || "asset";
+      let suffix = 2;
+
+      while (used.has(next)) {
+        next = `${base}${suffix}`;
+        suffix += 1;
+      }
+
+      used.add(next);
+      return next;
+    }
+
+    /**
+     * Генерирует исходники TS-файлов для phaser/scene.
+     */
+    function buildPhaserSceneSources(props) {
+      const { packName, manifest, atlasBasePath } = props;
+      const packCamel = toCamelCase(packName);
+      const packPascal = toPascalCase(packName);
+      const sceneClassName = `${toPascalCase(packName)}Scene`;
+      const sceneKey = sceneClassName;
+      const preloadFunctionName = `preload${packPascal}Assets`;
+      const atlasPngUrl = buildAtlasFilePath(atlasBasePath, `${packName}.png`);
+      const atlasJsonUrl = buildAtlasFilePath(atlasBasePath, `${packName}.json`);
+
+      const usedAssetKeys = new Set();
+      const entries = manifest.items.map((item) => {
+        const frameBaseName = String(item.fileName || "item.png").replace(/\.png$/i, "");
+        const assetKey = createUniqueAssetKey(frameBaseName, usedAssetKeys);
+        const kind = item.kind === "nine" ? "nine" : "image";
+        const ninePadding = kind === "nine"
+          ? (Number.isFinite(Number(item.ninePadding)) ? Number(item.ninePadding) : detectNinePadding(item.name || "") || 20)
+          : undefined;
+
+        return {
+          assetKey,
+          kind,
+          ninePadding,
+          x: Number(item.x || 0),
+          y: Number(item.y || 0),
+          width: Number(item.width || 0),
+          height: Number(item.height || 0),
+          frameName: item.fileName,
+        };
+      });
+
+      // Стабильный порядок для тестовой сцены: сверху вниз, слева направо.
+      entries.sort((a, b) => {
+        if (a.y !== b.y) return a.y - b.y;
+        if (a.x !== b.x) return a.x - b.x;
+        return a.assetKey.localeCompare(b.assetKey);
+      });
+
+      const typesTs = `// This file is auto-generated by figma2assets plugin. Do not edit manually.
+export type AutoAssetKind = "image" | "nine";
+
+export interface IAutoAssetData {
+  readonly name: string;
+  readonly url: string;
+  readonly frameName: string;
+  readonly width: number;
+  readonly height: number;
+  readonly x: number;
+  readonly y: number;
+  readonly kind: AutoAssetKind;
+  readonly ninePadding?: number;
+}
+
+export type AutoAssetMap = Record<string, IAutoAssetData>;
+
+export interface IAutoAtlasConfig {
+  readonly name: string;
+  readonly pngUrl: string;
+  readonly jsonUrl: string;
+}
+
+export interface IAutoAssetsConfig {
+  readonly images: AutoAssetMap;
+  readonly preload: {
+    readonly atlases: readonly IAutoAtlasConfig[];
+  };
+}
+
+export interface IAddAssetImageProps {
+  scene: Phaser.Scene;
+  asset: IAutoAssetData;
+  x?: number;
+  y?: number;
+}
+
+export interface IAddAssetNineProps {
+  scene: Phaser.Scene;
+  asset: IAutoAssetData;
+  width?: number;
+  height?: number;
+  x?: number;
+  y?: number;
+}
+`;
+
+      const utilsTs = `// This file is auto-generated by figma2assets plugin. Do not edit manually.
+import { Align } from "@kvisaz/phaser-sugar";
+import { IAddAssetImageProps, IAddAssetNineProps } from "./types";
+
+export function addAssetImage(props: IAddAssetImageProps): Phaser.GameObjects.Image {
+  const { scene, asset, x, y } = props;
+  const targetX = x ?? asset.x;
+  const targetY = y ?? asset.y;
+  const imageNode = scene.add.image(0, 0, asset.url, asset.frameName);
+  Align.setLeftTop(imageNode, targetX, targetY);
+  return imageNode;
+}
+
+export function addAssetNine(props: IAddAssetNineProps): Phaser.GameObjects.NineSlice {
+  const { scene, asset, width, height, x, y } = props;
+  const padding = asset.ninePadding ?? 20;
+  const targetWidth = width ?? asset.width;
+  const targetHeight = height ?? asset.height;
+  const targetX = x ?? asset.x;
+  const targetY = y ?? asset.y;
+
+  const nineSliceNode = scene.add.existing(
+    new Phaser.GameObjects.NineSlice(
+      scene,
+      0,
+      0,
+      asset.url,
+      asset.frameName,
+      targetWidth,
+      targetHeight,
+      padding,
+      padding,
+      padding,
+      padding,
+    ),
+  );
+
+  Align.setLeftTop(nineSliceNode, targetX, targetY);
+  return nineSliceNode;
+}
+`;
+
+      const assetsObjectLines = entries.map((entry) => {
+        const ninePaddingLine = entry.kind === "nine" ? `\n    ninePadding: ${entry.ninePadding},` : "";
+        return `  ${entry.assetKey}: {\n    name: "${entry.assetKey}",\n    url: "${atlasPngUrl}",\n    frameName: "${entry.frameName}",\n    width: ${entry.width},\n    height: ${entry.height},\n    x: ${entry.x},\n    y: ${entry.y},\n    kind: "${entry.kind}",${ninePaddingLine}\n  },`;
+      });
+
+      const orderLines = entries.map((entry) => `  "${entry.assetKey}",`);
+
+      const assetsTs = `// This file is auto-generated by figma2assets plugin. Do not edit manually.
+import { AutoAssetMap, IAutoAssetsConfig } from "./types";
+
+const ${packCamel}AutoAssetsConst = {
+${assetsObjectLines.join("\n")}
+} as const;
+
+export type AutoAssetName = keyof typeof ${packCamel}AutoAssetsConst;
+
+export const ${packCamel}AutoAssetOrder: readonly AutoAssetName[] = [
+${orderLines.join("\n")}
+];
+
+// Отдельный конфиг для текущего pack: изображения + список atlas для preload.
+export const ${packCamel}AutoAssetsConfig: IAutoAssetsConfig = {
+  images: ${packCamel}AutoAssetsConst,
+  preload: {
+    atlases: [
+      {
+        name: "${packName}",
+        pngUrl: "${atlasPngUrl}",
+        jsonUrl: "${atlasJsonUrl}",
+      },
+    ],
+  },
+} as const;
+
+export const ${packCamel}AutoAssets: AutoAssetMap = ${packCamel}AutoAssetsConfig.images;
+export const ${packCamel}AutoAtlas = ${packCamel}AutoAssetsConfig.preload.atlases[0];
+
+// Экспортируем pack-specific preload, чтобы сцена/игра могла подгружать atlas одной функцией.
+export function ${preloadFunctionName}(scene: Phaser.Scene): void {
+  ${packCamel}AutoAssetsConfig.preload.atlases.forEach((atlas) => {
+    if (scene.textures.exists(atlas.pngUrl)) return;
+    scene.load.atlas(atlas.pngUrl, atlas.pngUrl, atlas.jsonUrl);
+  });
+}
+`;
+
+      const sceneTs = `// This file is auto-generated by figma2assets plugin. Do not edit manually.
+import { addAssetImage, addAssetNine } from "./utils";
+import { ${packCamel}AutoAssets, ${packCamel}AutoAssetOrder, AutoAssetName, ${preloadFunctionName} } from "./${packName}-assets";
+
+export class ${sceneClassName} extends Phaser.Scene {
+  constructor() {
+    super({ key: "${sceneKey}" });
+  }
+
+  preload(): void {
+    ${preloadFunctionName}(this);
+  }
+
+  create(): void {
+    ${packCamel}AutoAssetOrder.forEach((assetName: AutoAssetName) => {
+      const asset = ${packCamel}AutoAssets[assetName];
+      if (asset.kind === "nine") {
+        addAssetNine({ scene: this, asset });
+        return;
+      }
+      addAssetImage({ scene: this, asset });
+    });
+  }
+}
+`;
+
+      return {
+        typesTs,
+        utilsTs,
+        assetsTs,
+        sceneTs,
+      };
+    }
+
+    /**
+     * Собирает весь ZIP-архив в нужной структуре папок.
+     */
+    async function buildZipArchive(props) {
+      const { packName, payload, atlasPngBytes, atlasJson, sceneSources } = props;
+      const JSZipCtor = window.JSZip || globalThis.JSZip;
+      if (!JSZipCtor) {
+        throw new Error(`JSZip is not available. ${describeJsZipState()}`);
+      }
+
+      const zip = new JSZipCtor();
+
+      // 1) Исходные PNG по верхним детям узла.
+      const pngFolder = zip.folder("png") || zip;
+      payload.files.forEach((file) => {
+        pngFolder.file(file.fileName, file.bytes);
+      });
+
+      // 2) Manifest в корне ZIP.
+      const manifestForZip = {
+        ...payload.manifest,
+        packName,
+      };
+      zip.file("manifest.json", JSON.stringify(manifestForZip, null, 2));
+
+      // 3) Phaser atlas файлы.
+      const phaserFolder = zip.folder("phaser") || zip;
+      const atlasFolder = phaserFolder.folder("atlases") || phaserFolder;
+      atlasFolder.file(`${packName}.png`, atlasPngBytes);
+      atlasFolder.file(`${packName}.json`, JSON.stringify(atlasJson, null, 2));
+
+      // 4) Phaser scene файлы.
+      const sceneFolder = phaserFolder.folder("scene") || phaserFolder;
+      sceneFolder.file(`${packName}-scene.ts`, sceneSources.sceneTs);
+      sceneFolder.file(`${packName}-assets.ts`, sceneSources.assetsTs);
+      sceneFolder.file("utils.ts", sceneSources.utilsTs);
+      sceneFolder.file("types.ts", sceneSources.typesTs);
+
+      const blob = await zip.generateAsync({ type: "blob", compression: "DEFLATE" });
+      return blob;
+    }
+
+    /**
+     * Полный сценарий: atlas pack + генерация TS + ZIP.
+     */
+    async function downloadZip() {
+      if (!exportPayload) {
+        setStatus("Нет данных для скачивания. Сначала выполните экспорт.");
+        return;
+      }
+
+      const packName = slugify(packNameInput.value || exportPayload.packName || "pack");
+      const atlasBasePath = normalizeAtlasBasePath(atlasBasePathInput.value || DEFAULT_ATLAS_BASE_PATH);
+      packNameInput.value = packName;
+      atlasBasePathInput.value = atlasBasePath;
+
+      downloadZipButton.disabled = true;
+
+      let preparedImages = [];
+
+      try {
+        preparedImages = await prepareImagesForPacking(exportPayload.files);
+
+        setStatus("Упаковка atlas (shelf-packer)…");
+        const packResult = packImagesShelf(preparedImages, ATLAS_PACKER_OPTIONS);
+
+        setStatus(
+          `Рендер atlas PNG…\n` +
+          `Размер atlas: ${packResult.atlasWidth}x${packResult.atlasHeight}\n` +
+          `Frames: ${packResult.placements.length}`,
+        );
+        const atlasPngBytes = await renderAtlasPng(packResult);
+
+        setStatus("Формирование atlas JSON…");
+        const atlasJson = buildPhaserAtlasJson({ packName, packResult });
+
+        setStatus("Генерация Phaser scene файлов…");
+        const sceneSources = buildPhaserSceneSources({
+          packName,
+          manifest: exportPayload.manifest,
+          atlasBasePath,
+        });
+
+        setStatus("Сборка ZIP структуры…");
+        const zipBlob = await buildZipArchive({
+          packName,
+          payload: exportPayload,
+          atlasPngBytes,
+          atlasJson,
+          sceneSources,
+        });
+
+        downloadBlob(zipBlob, `${packName}.zip`);
+        setStatus(`Готово. Скачан архив ${packName}.zip`);
+
+        postToPlugin({ type: "EXPORT_DONE" });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setStatus(`Ошибка при создании ZIP:\n${message}`);
+        postToPlugin({ type: "EXPORT_ERROR", message });
+      } finally {
+        disposePreparedImages(preparedImages);
+        downloadZipButton.disabled = false;
+      }
+    }
+
+    /**
+     * Слушает сообщения от code.js.
+     */
+    window.onmessage = (event) => {
+      const msg = event.data && event.data.pluginMessage;
+      if (!msg || typeof msg !== "object") return;
+
+      if (msg.type === "EXPORT_PROGRESS") {
+        const done = Number(msg.done || 0);
+        const total = Number(msg.total || 0);
+        const currentName = msg.currentName ? `\nТекущий узел: ${msg.currentName}` : "";
+        setStatus(`Экспорт PNG… ${done}/${total}${currentName}`);
+        return;
+      }
+
+      if (msg.type === "EXPORT_READY") {
+        exportPayload = msg;
+        packNameInput.value = slugify(msg.packName || "pack");
+        downloadZipButton.disabled = false;
+        setStatus(
+          `Экспорт завершен.\n` +
+          `Pack: ${packNameInput.value}\n` +
+          `Atlas base path: ${normalizeAtlasBasePath(atlasBasePathInput.value)}\n` +
+          `PNG файлов: ${msg.files.length}\n` +
+          `Нажмите \"Скачать ZIP\".`,
+        );
+        return;
+      }
+
+      if (msg.type === "EXPORT_FAILED") {
+        downloadZipButton.disabled = true;
+        setStatus(`Ошибка экспорта:\n${msg.message || "Неизвестная ошибка"}`);
+        appendLog(`ERROR: ${msg.message || "Неизвестная ошибка"}`);
+        return;
+      }
+
+      if (msg.type === "LOG") {
+        const level = String(msg.level || "info").toUpperCase();
+        const at = msg.atIso ? `[${msg.atIso}] ` : "";
+        appendLog(`${at}${level}: ${String(msg.message || "")}`);
+      }
+    };
+
+    // Кнопки управления UI.
+    downloadZipButton.addEventListener("click", () => {
+      downloadZip();
+    });
+
+    retryButton.addEventListener("click", () => {
+      downloadZipButton.disabled = true;
+      setStatus("Повторный запуск экспорта…");
+      postToPlugin({ type: "RETRY_EXPORT" });
+    });
+
+    closeButton.addEventListener("click", () => {
+      postToPlugin({ type: "CLOSE" });
+    });
+  </script>
+</body>
+</html>

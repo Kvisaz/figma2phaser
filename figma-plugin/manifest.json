@@ -1,0 +1,13 @@
+{
+  "name": "Figma2Assets Export",
+  "id": "figma2assets-export-local",
+  "api": "1.0.0",
+  "editorType": ["figma"],
+  "main": "code.js",
+  "ui": "ui.html",
+  "documentAccess": "dynamic-page",
+  "networkAccess": {
+    "allowedDomains": ["https://cdn.jsdelivr.net"],
+    "reasoning": "UI loads JSZip from jsdelivr for ZIP generation"
+  }
+}
