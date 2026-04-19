@@ -110,12 +110,25 @@
     const statusLogLines = [];
 
     /**
-     * Простые настройки встроенного atlas-пэкера.
+     * Настройки встроенного atlas-пэкера.
      * padding нужен, чтобы спрайты не прилипали друг к другу.
      */
     const ATLAS_PACKER_OPTIONS = Object.freeze({
+      algorithm: "maxrects",
       padding: 2,
       minAtlasSize: 8,
+      maxAtlasSize: 8192,
+      powerOfTwo: false,
+      allowTrim: true,
+      alphaThreshold: 0,
+      allowRotation: false,
+      heuristics: [
+        "bestShortSideFit",
+        "bestLongSideFit",
+        "bestAreaFit",
+        "bottomLeft",
+        "contactPoint",
+      ],
     });
 
     /**
@@ -156,6 +169,28 @@
         : "";
       statusNode.textContent = `${base}${logText}`;
       statusNode.scrollTop = statusNode.scrollHeight;
+    }
+
+    /**
+     * Достает предупреждения по исходным именам из manifest.
+     */
+    function getUnsafeNameWarningsFromPayload(payload) {
+      if (!payload || !payload.manifest || !payload.manifest.warnings) return [];
+      const warnings = payload.manifest.warnings.unsafeNames;
+      return Array.isArray(warnings) ? warnings : [];
+    }
+
+    /**
+     * Формирует читаемый список небезопасных имен для статуса UI.
+     */
+    function formatUnsafeNameWarningsForStatus(warnings) {
+      return warnings.map((warning) => {
+        const invalidCharacters = Array.isArray(warning.invalidCharacters)
+          ? warning.invalidCharacters.map((char) => JSON.stringify(char)).join(", ")
+          : "";
+        const suffix = invalidCharacters ? ` (${invalidCharacters})` : "";
+        return `- ${warning.role}: "${warning.name}" -> "${warning.safeName}"${suffix}`;
+      }).join("\n");
     }
 
     /**
@@ -363,6 +398,11 @@
           ...item,
           atlasX: x,
           atlasY: y,
+          frameWidth: item.width,
+          frameHeight: item.height,
+          packedWidth: item.width + padding,
+          packedHeight: item.height + padding,
+          rotated: false,
         });
 
         x += item.width + padding;
@@ -377,8 +417,647 @@
       return {
         atlasWidth,
         atlasHeight,
+        algorithm: "shelf",
         placements,
       };
+    }
+
+    /**
+     * Выбирает алгоритм упаковки и оставляет shelf как fallback.
+     */
+    function packImagesForAtlas(images, options) {
+      const algorithm = String(options.algorithm || "maxrects").toLowerCase();
+
+      if (algorithm === "maxrects") {
+        try {
+          return packImagesMaxRects(images, options);
+        } catch (error) {
+          const fallback = packImagesShelf(images, options);
+          const message = error instanceof Error ? error.message : String(error);
+          return {
+            ...fallback,
+            fallbackReason: message,
+          };
+        }
+      }
+
+      return packImagesShelf(images, options);
+    }
+
+    /**
+     * MaxRects-пэкер: перебирает размеры atlas и эвристики, затем выбирает лучший результат.
+     */
+    function packImagesMaxRects(images, options) {
+      const minAtlasSize = options.minAtlasSize;
+      if (images.length === 0) {
+        return {
+          atlasWidth: minAtlasSize,
+          atlasHeight: minAtlasSize,
+          algorithm: "maxrects",
+          heuristic: "none",
+          placements: [],
+        };
+      }
+
+      const sortedImages = sortImagesForPacking(images);
+      const candidates = generateAtlasSizeCandidates(sortedImages, options);
+      const heuristics = getMaxRectsHeuristics(options);
+      let bestResult = null;
+
+      candidates.forEach((candidate) => {
+        heuristics.forEach((heuristic) => {
+          const packResult = tryPackImagesIntoSize(
+            sortedImages,
+            candidate.width,
+            candidate.height,
+            options,
+            heuristic,
+          );
+
+          if (!packResult) return;
+
+          const normalizedResult = shrinkPackResultToUsedBounds({
+            ...packResult,
+            algorithm: "maxrects",
+            heuristic,
+          }, options);
+
+          if (!bestResult || isBetterPackResult(normalizedResult, bestResult)) {
+            bestResult = normalizedResult;
+          }
+        });
+      });
+
+      if (bestResult) return bestResult;
+
+      throw new Error(`MaxRects не смог упаковать ${images.length} PNG до ${options.maxAtlasSize}x${options.maxAtlasSize}`);
+    }
+
+    /**
+     * Возвращает список эвристик MaxRects, с которыми стоит попробовать packing.
+     */
+    function getMaxRectsHeuristics(options) {
+      if (Array.isArray(options.heuristics) && options.heuristics.length > 0) {
+        return options.heuristics;
+      }
+
+      return ["bestShortSideFit"];
+    }
+
+    /**
+     * Сначала кладем крупные и сложные прямоугольники, чтобы они не остались без места.
+     */
+    function sortImagesForPacking(images) {
+      return [...images].sort((a, b) => {
+        const aLongSide = Math.max(a.width, a.height);
+        const bLongSide = Math.max(b.width, b.height);
+        const aArea = a.width * a.height;
+        const bArea = b.width * b.height;
+
+        if (aLongSide !== bLongSide) return bLongSide - aLongSide;
+        if (aArea !== bArea) return bArea - aArea;
+        if (a.height !== b.height) return b.height - a.height;
+        return String(a.fileName).localeCompare(String(b.fileName));
+      });
+    }
+
+    /**
+     * Генерирует размеры atlas. Площадь важнее квадратности, квадратность только tie-breaker.
+     */
+    function generateAtlasSizeCandidates(images, options) {
+      const padding = options.padding;
+      const minAtlasSize = options.minAtlasSize;
+      const maxAtlasSize = options.maxAtlasSize;
+      const widest = images.reduce((max, item) => {
+        const requiredWidth = options.allowRotation
+          ? Math.min(item.width, item.height) + padding * 2
+          : item.width + padding * 2;
+        return Math.max(max, requiredWidth);
+      }, minAtlasSize);
+      const tallest = images.reduce((max, item) => {
+        const requiredHeight = options.allowRotation
+          ? Math.min(item.width, item.height) + padding * 2
+          : item.height + padding * 2;
+        return Math.max(max, requiredHeight);
+      }, minAtlasSize);
+      const minWidth = nextPow2(Math.max(minAtlasSize, widest));
+      const minHeight = nextPow2(Math.max(minAtlasSize, tallest));
+      const requiredArea = images.reduce((sum, item) => {
+        return sum + (item.width + padding) * (item.height + padding);
+      }, 0);
+      const candidates = [];
+
+      for (let width = minWidth; width <= maxAtlasSize; width = getNextAtlasCandidateSize(width, options)) {
+        for (let height = minHeight; height <= maxAtlasSize; height = getNextAtlasCandidateSize(height, options)) {
+          if (width * height < requiredArea) continue;
+          candidates.push({ width, height });
+        }
+      }
+
+      candidates.sort((a, b) => {
+        const aArea = a.width * a.height;
+        const bArea = b.width * b.height;
+        const aMaxSide = Math.max(a.width, a.height);
+        const bMaxSide = Math.max(b.width, b.height);
+        const aAspectDelta = Math.abs(a.width - a.height);
+        const bAspectDelta = Math.abs(b.width - b.height);
+
+        if (aArea !== bArea) return aArea - bArea;
+        if (aAspectDelta !== bAspectDelta) return aAspectDelta - bAspectDelta;
+        if (aMaxSide !== bMaxSide) return aMaxSide - bMaxSide;
+        return a.height - b.height;
+      });
+
+      return candidates;
+    }
+
+    /**
+     * Возвращает следующий допустимый размер atlas.
+     */
+    function getNextAtlasCandidateSize(value, options) {
+      if (options.powerOfTwo !== false) return value * 2;
+      return value + 64;
+    }
+
+    /**
+     * Пытается упаковать весь набор в конкретный размер atlas и одной эвристикой.
+     */
+    function tryPackImagesIntoSize(images, atlasWidth, atlasHeight, options, heuristic) {
+      const padding = options.padding;
+      let freeRects = [createInitialFreeRect(atlasWidth, atlasHeight, padding)];
+      const placements = [];
+
+      for (let index = 0; index < images.length; index += 1) {
+        const image = images[index];
+        const placement = findBestMaxRectsPlacement(
+          freeRects,
+          placements,
+          image,
+          options,
+          heuristic,
+          atlasWidth,
+          atlasHeight,
+        );
+
+        if (!placement) {
+          return null;
+        }
+
+        placements.push(createPlacedImage(image, placement));
+        freeRects = splitFreeRects(freeRects, createUsedRectFromPlacement(placement));
+        freeRects = pruneContainedFreeRects(freeRects);
+      }
+
+      return {
+        atlasWidth,
+        atlasHeight,
+        placements,
+      };
+    }
+
+    /**
+     * Оставляет внешний padding по левому и верхнему краю atlas.
+     */
+    function createInitialFreeRect(atlasWidth, atlasHeight, padding) {
+      return {
+        x: padding,
+        y: padding,
+        width: Math.max(0, atlasWidth - padding),
+        height: Math.max(0, atlasHeight - padding),
+      };
+    }
+
+    /**
+     * Ищет лучшее место для одного изображения по выбранной эвристике.
+     */
+    function findBestMaxRectsPlacement(freeRects, placements, image, options, heuristic, atlasWidth, atlasHeight) {
+      const padding = options.padding;
+      const variants = createPackingVariants(image, padding, options.allowRotation);
+      let best = null;
+
+      freeRects.forEach((freeRect) => {
+        variants.forEach((variant) => {
+          if (variant.packedWidth > freeRect.width || variant.packedHeight > freeRect.height) return;
+
+          const candidate = {
+            ...variant,
+            x: freeRect.x,
+            y: freeRect.y,
+          };
+
+          candidate.score = scoreMaxRectsCandidate(
+            heuristic,
+            candidate,
+            freeRect,
+            placements,
+            atlasWidth,
+            atlasHeight,
+            padding,
+          );
+
+          if (!best || isBetterMaxRectsPlacement(candidate, best)) {
+            best = candidate;
+          }
+        });
+      });
+
+      return best;
+    }
+
+    /**
+     * Возвращает normal/rotated варианты одного изображения.
+     */
+    function createPackingVariants(image, padding, allowRotation) {
+      const variants = [
+        {
+          rotated: false,
+          frameWidth: image.width,
+          frameHeight: image.height,
+          packedWidth: image.width + padding,
+          packedHeight: image.height + padding,
+        },
+      ];
+
+      if (allowRotation && image.width !== image.height) {
+        variants.push({
+          rotated: true,
+          frameWidth: image.height,
+          frameHeight: image.width,
+          packedWidth: image.height + padding,
+          packedHeight: image.width + padding,
+        });
+      }
+
+      return variants;
+    }
+
+    /**
+     * Считает score кандидата для конкретной эвристики MaxRects.
+     */
+    function scoreMaxRectsCandidate(heuristic, candidate, freeRect, placements, atlasWidth, atlasHeight, padding) {
+      const leftoverWidth = freeRect.width - candidate.packedWidth;
+      const leftoverHeight = freeRect.height - candidate.packedHeight;
+      const shortSideFit = Math.min(leftoverWidth, leftoverHeight);
+      const longSideFit = Math.max(leftoverWidth, leftoverHeight);
+      const areaFit = freeRect.width * freeRect.height - candidate.packedWidth * candidate.packedHeight;
+      const bottom = candidate.y + candidate.packedHeight;
+      const contactScore = calculateContactPointScore(
+        createUsedRectFromPlacement(candidate),
+        placements,
+        atlasWidth,
+        atlasHeight,
+        padding,
+      );
+
+      if (heuristic === "bestLongSideFit") {
+        return [longSideFit, shortSideFit, areaFit, candidate.y, candidate.x];
+      }
+
+      if (heuristic === "bestAreaFit") {
+        return [areaFit, shortSideFit, longSideFit, candidate.y, candidate.x];
+      }
+
+      if (heuristic === "bottomLeft") {
+        return [bottom, candidate.x, shortSideFit, areaFit];
+      }
+
+      if (heuristic === "contactPoint") {
+        return [-contactScore, bottom, candidate.x, areaFit];
+      }
+
+      return [shortSideFit, longSideFit, areaFit, candidate.y, candidate.x];
+    }
+
+    /**
+     * Сравнивает кандидатов MaxRects детерминированно.
+     */
+    function isBetterMaxRectsPlacement(candidate, best) {
+      const scoreComparison = compareNumberArrays(candidate.score, best.score);
+      if (scoreComparison !== 0) return scoreComparison < 0;
+      if (candidate.rotated !== best.rotated) return !candidate.rotated;
+      if (candidate.y !== best.y) return candidate.y < best.y;
+      return candidate.x < best.x;
+    }
+
+    /**
+     * Переносит поля изображения в placement, сохраняя контракт atlas-пайплайна.
+     */
+    function createPlacedImage(image, placement) {
+      return {
+        ...image,
+        atlasX: placement.x,
+        atlasY: placement.y,
+        frameWidth: placement.frameWidth,
+        frameHeight: placement.frameHeight,
+        packedWidth: placement.packedWidth,
+        packedHeight: placement.packedHeight,
+        rotated: placement.rotated,
+      };
+    }
+
+    /**
+     * Создает занятый прямоугольник с учетом padding.
+     */
+    function createUsedRectFromPlacement(placement) {
+      return {
+        x: placement.x,
+        y: placement.y,
+        width: placement.packedWidth,
+        height: placement.packedHeight,
+      };
+    }
+
+    /**
+     * Contact Point эвристика: чем больше общая граница с соседями/краями, тем плотнее.
+     */
+    function calculateContactPointScore(rect, placements, atlasWidth, atlasHeight, padding) {
+      let score = 0;
+
+      if (rect.x <= padding) score += rect.height;
+      if (rect.y <= padding) score += rect.width;
+      if (rect.x + rect.width >= atlasWidth) score += rect.height;
+      if (rect.y + rect.height >= atlasHeight) score += rect.width;
+
+      placements.forEach((placement) => {
+        const other = createUsedRectFromPlacement(placement);
+
+        if (rect.x === other.x + other.width || rect.x + rect.width === other.x) {
+          score += calculateCommonIntervalLength(rect.y, rect.y + rect.height, other.y, other.y + other.height);
+        }
+
+        if (rect.y === other.y + other.height || rect.y + rect.height === other.y) {
+          score += calculateCommonIntervalLength(rect.x, rect.x + rect.width, other.x, other.x + other.width);
+        }
+      });
+
+      return score;
+    }
+
+    /**
+     * Длина пересечения двух одномерных интервалов.
+     */
+    function calculateCommonIntervalLength(aStart, aEnd, bStart, bEnd) {
+      return Math.max(0, Math.min(aEnd, bEnd) - Math.max(aStart, bStart));
+    }
+
+    /**
+     * Разрезает free rect вокруг занятого прямоугольника.
+     */
+    function splitFreeRects(freeRects, usedRect) {
+      const nextRects = [];
+
+      freeRects.forEach((freeRect) => {
+        if (!rectsIntersect(freeRect, usedRect)) {
+          nextRects.push(freeRect);
+          return;
+        }
+
+        pushFreeRect(nextRects, createFreeRect(
+          freeRect.x,
+          freeRect.y,
+          usedRect.x - freeRect.x,
+          freeRect.height,
+        ));
+
+        pushFreeRect(nextRects, createFreeRect(
+          usedRect.x + usedRect.width,
+          freeRect.y,
+          freeRect.x + freeRect.width - (usedRect.x + usedRect.width),
+          freeRect.height,
+        ));
+
+        pushFreeRect(nextRects, createFreeRect(
+          freeRect.x,
+          freeRect.y,
+          freeRect.width,
+          usedRect.y - freeRect.y,
+        ));
+
+        pushFreeRect(nextRects, createFreeRect(
+          freeRect.x,
+          usedRect.y + usedRect.height,
+          freeRect.width,
+          freeRect.y + freeRect.height - (usedRect.y + usedRect.height),
+        ));
+      });
+
+      return nextRects;
+    }
+
+    /**
+     * Удаляет free rect, если он полностью содержится в другом free rect.
+     */
+    function pruneContainedFreeRects(freeRects) {
+      return freeRects.filter((rect, index) => {
+        for (let otherIndex = 0; otherIndex < freeRects.length; otherIndex += 1) {
+          if (index === otherIndex) continue;
+          const other = freeRects[otherIndex];
+
+          if (isContainedInRect(rect, other)) {
+            if (!areRectsEqual(rect, other) || index > otherIndex) {
+              return false;
+            }
+          }
+        }
+
+        return true;
+      });
+    }
+
+    /**
+     * Создает free rect только если у него положительные размеры.
+     */
+    function createFreeRect(x, y, width, height) {
+      if (width <= 0 || height <= 0) return null;
+      return { x, y, width, height };
+    }
+
+    /**
+     * Добавляет free rect в список, пропуская null.
+     */
+    function pushFreeRect(target, rect) {
+      if (rect) target.push(rect);
+    }
+
+    /**
+     * Проверяет пересечение прямоугольников.
+     */
+    function rectsIntersect(a, b) {
+      return (
+        a.x < b.x + b.width &&
+        a.x + a.width > b.x &&
+        a.y < b.y + b.height &&
+        a.y + a.height > b.y
+      );
+    }
+
+    /**
+     * Проверяет, что один прямоугольник полностью находится внутри другого.
+     */
+    function isContainedInRect(inner, outer) {
+      return (
+        inner.x >= outer.x &&
+        inner.y >= outer.y &&
+        inner.x + inner.width <= outer.x + outer.width &&
+        inner.y + inner.height <= outer.y + outer.height
+      );
+    }
+
+    /**
+     * Нужна для детерминированного удаления дублей free rect.
+     */
+    function areRectsEqual(a, b) {
+      return (
+        a.x === b.x &&
+        a.y === b.y &&
+        a.width === b.width &&
+        a.height === b.height
+      );
+    }
+
+    /**
+     * Ужимает atlas до реально занятой области, сохраняя выбранную сетку размеров.
+     */
+    function shrinkPackResultToUsedBounds(packResult, options) {
+      const usedBounds = calculateUsedAtlasBounds(packResult.placements, options.padding);
+      const atlasWidth = Math.min(
+        packResult.atlasWidth,
+        normalizeAtlasSize(usedBounds.width, options),
+      );
+      const atlasHeight = Math.min(
+        packResult.atlasHeight,
+        normalizeAtlasSize(usedBounds.height, options),
+      );
+
+      return {
+        ...packResult,
+        atlasWidth,
+        atlasHeight,
+      };
+    }
+
+    /**
+     * Считает реально занятую область placements с учетом padding справа/снизу.
+     */
+    function calculateUsedAtlasBounds(placements, padding) {
+      const used = placements.reduce((acc, placement) => {
+        return {
+          width: Math.max(acc.width, placement.atlasX + placement.frameWidth + padding),
+          height: Math.max(acc.height, placement.atlasY + placement.frameHeight + padding),
+        };
+      }, { width: 1, height: 1 });
+
+      return used;
+    }
+
+    /**
+     * Приводит размер atlas к допустимому значению.
+     */
+    function normalizeAtlasSize(value, options) {
+      const safe = Math.max(options.minAtlasSize, Math.ceil(value));
+      if (options.powerOfTwo !== false) return nextPow2(safe);
+      return safe;
+    }
+
+    /**
+     * Выбирает лучший pack result: площадь важнее, квадратность — только tie-breaker.
+     */
+    function isBetterPackResult(candidate, best) {
+      const candidateScore = createPackResultScore(candidate);
+      const bestScore = createPackResultScore(best);
+      return compareNumberArrays(candidateScore, bestScore) < 0;
+    }
+
+    /**
+     * Score результата packing: минимум площади, максимум заполненности, разумная квадратность.
+     */
+    function createPackResultScore(packResult) {
+      const usage = calculateAtlasUsage(packResult);
+      const area = packResult.atlasWidth * packResult.atlasHeight;
+      const aspectPenalty = Math.abs(Math.log(packResult.atlasWidth / packResult.atlasHeight));
+      const rotatedCount = packResult.placements.filter((placement) => placement.rotated).length;
+      const occupiedBounds = calculateUsedAtlasBounds(packResult.placements, 0);
+      const occupiedArea = occupiedBounds.width * occupiedBounds.height;
+
+      return [
+        area,
+        -usage.ratio,
+        aspectPenalty,
+        occupiedArea,
+        rotatedCount,
+      ];
+    }
+
+    /**
+     * Лексикографическое сравнение числовых score-массивов.
+     */
+    function compareNumberArrays(a, b) {
+      const length = Math.max(a.length, b.length);
+
+      for (let index = 0; index < length; index += 1) {
+        const aValue = Number.isFinite(a[index]) ? a[index] : 0;
+        const bValue = Number.isFinite(b[index]) ? b[index] : 0;
+        if (aValue !== bValue) return aValue - bValue;
+      }
+
+      return 0;
+    }
+
+    /**
+     * Считает заполненность atlas реальными frame pixels без учета padding.
+     */
+    function calculateAtlasUsage(packResult) {
+      const atlasArea = packResult.atlasWidth * packResult.atlasHeight;
+      const frameArea = packResult.placements.reduce((sum, placement) => {
+        return sum + placement.frameWidth * placement.frameHeight;
+      }, 0);
+
+      return {
+        frameArea,
+        atlasArea,
+        ratio: atlasArea > 0 ? frameArea / atlasArea : 0,
+      };
+    }
+
+    /**
+     * Считает, сколько площади убрал alpha-trim перед packing.
+     */
+    function calculateTrimStats(images) {
+      const sourceArea = images.reduce((sum, image) => {
+        return sum + image.sourceWidth * image.sourceHeight;
+      }, 0);
+      const trimmedArea = images.reduce((sum, image) => {
+        return sum + image.width * image.height;
+      }, 0);
+      const trimmedCount = images.filter((image) => image.trimmed).length;
+
+      return {
+        sourceArea,
+        trimmedArea,
+        trimmedCount,
+        savedRatio: sourceArea > 0 ? 1 - trimmedArea / sourceArea : 0,
+      };
+    }
+
+    /**
+     * Считает количество повернутых кадров в готовом atlas.
+     */
+    function countRotatedPlacements(packResult) {
+      return packResult.placements.filter((placement) => placement.rotated).length;
+    }
+
+    /**
+     * Форматирует заполненность atlas для UI.
+     */
+    function formatAtlasUsagePercent(usage) {
+      return `${(usage.ratio * 100).toFixed(1)}%`;
+    }
+
+    /**
+     * Форматирует процент с одним знаком после точки.
+     */
+    function formatPercent(value) {
+      return `${(value * 100).toFixed(1)}%`;
     }
 
     /**
@@ -397,7 +1076,7 @@
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
       packResult.placements.forEach((placement) => {
-        ctx.drawImage(placement.drawable, placement.atlasX, placement.atlasY);
+        drawPlacementToAtlas(ctx, placement);
       });
 
       const blob = await new Promise((resolve) => {
@@ -413,6 +1092,22 @@
     }
 
     /**
+     * Рисует один frame в atlas, учитывая 90-degree rotation.
+     */
+    function drawPlacementToAtlas(ctx, placement) {
+      if (!placement.rotated) {
+        ctx.drawImage(placement.drawable, placement.atlasX, placement.atlasY);
+        return;
+      }
+
+      ctx.save();
+      ctx.translate(placement.atlasX + placement.frameWidth, placement.atlasY);
+      ctx.rotate(Math.PI / 2);
+      ctx.drawImage(placement.drawable, 0, 0);
+      ctx.restore();
+    }
+
+    /**
      * Формирует JSON atlas в формате Phaser3.
      */
     function buildPhaserAtlasJson(props) {
@@ -424,20 +1119,20 @@
           frame: {
             x: placement.atlasX,
             y: placement.atlasY,
-            w: placement.width,
-            h: placement.height,
+            w: placement.frameWidth,
+            h: placement.frameHeight,
           },
-          rotated: false,
-          trimmed: false,
+          rotated: Boolean(placement.rotated),
+          trimmed: Boolean(placement.trimmed),
           spriteSourceSize: {
-            x: 0,
-            y: 0,
-            w: placement.width,
-            h: placement.height,
+            x: placement.spriteSourceX,
+            y: placement.spriteSourceY,
+            w: placement.spriteSourceWidth,
+            h: placement.spriteSourceHeight,
           },
           sourceSize: {
-            w: placement.width,
-            h: placement.height,
+            w: placement.sourceWidth,
+            h: placement.sourceHeight,
           },
         };
       });
@@ -461,7 +1156,7 @@
     /**
      * Преобразует экспортированные PNG в структуру для пэкера.
      */
-    async function prepareImagesForPacking(files) {
+    async function prepareImagesForPacking(files, options) {
       const prepared = [];
 
       for (let index = 0; index < files.length; index += 1) {
@@ -469,17 +1164,174 @@
         setStatus(`Подготовка PNG для atlas… ${index + 1}/${files.length}\n${file.fileName}`);
 
         const decoded = await bytesToDrawableImage(file.bytes);
-        prepared.push({
-          fileName: file.fileName,
-          bytes: file.bytes,
-          width: decoded.width,
-          height: decoded.height,
-          drawable: decoded.drawable,
-          dispose: decoded.dispose,
-        });
+
+        try {
+          prepared.push(createPreparedImageForPacking(file, decoded, options));
+        } finally {
+          decoded.dispose();
+        }
       }
 
       return prepared;
+    }
+
+    /**
+     * Готовит canvas с обрезанными прозрачными краями и сохраняет metadata для atlas JSON.
+     */
+    function createPreparedImageForPacking(file, decoded, options) {
+      const sourceCanvas = drawDecodedImageToCanvas(decoded);
+      const sourceWidth = sourceCanvas.width;
+      const sourceHeight = sourceCanvas.height;
+      const trimBounds = options.allowTrim
+        ? findOpaqueBoundsInCanvas(sourceCanvas, options.alphaThreshold)
+        : createFullImageBounds(sourceWidth, sourceHeight);
+      const safeBounds = trimBounds || createEmptyImageBounds(sourceWidth, sourceHeight);
+      const drawable = drawTrimmedImageToCanvas(sourceCanvas, safeBounds);
+      const trimmed = isTrimmedBounds(safeBounds, sourceWidth, sourceHeight);
+
+      return {
+        fileName: file.fileName,
+        bytes: file.bytes,
+        width: safeBounds.width,
+        height: safeBounds.height,
+        sourceWidth,
+        sourceHeight,
+        spriteSourceX: safeBounds.x,
+        spriteSourceY: safeBounds.y,
+        spriteSourceWidth: safeBounds.width,
+        spriteSourceHeight: safeBounds.height,
+        trimmed,
+        drawable,
+        dispose: () => {},
+      };
+    }
+
+    /**
+     * Рисует исходный bitmap/image на canvas, чтобы можно было читать alpha и делать crop.
+     */
+    function drawDecodedImageToCanvas(decoded) {
+      const canvas = document.createElement("canvas");
+      canvas.width = decoded.width;
+      canvas.height = decoded.height;
+
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        throw new Error("Canvas 2D context is not available");
+      }
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(decoded.drawable, 0, 0);
+      return canvas;
+    }
+
+    /**
+     * Находит bounding box пикселей с alpha выше threshold.
+     */
+    function findOpaqueBoundsInCanvas(canvas, alphaThreshold) {
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        throw new Error("Canvas 2D context is not available");
+      }
+
+      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      return findOpaqueBounds(imageData.data, canvas.width, canvas.height, alphaThreshold);
+    }
+
+    /**
+     * Сканирует ImageData и возвращает минимальный прямоугольник непрозрачных пикселей.
+     */
+    function findOpaqueBounds(data, width, height, alphaThreshold) {
+      const threshold = Number(alphaThreshold || 0);
+      let minX = width;
+      let minY = height;
+      let maxX = -1;
+      let maxY = -1;
+
+      for (let y = 0; y < height; y += 1) {
+        for (let x = 0; x < width; x += 1) {
+          const alpha = data[(y * width + x) * 4 + 3];
+          if (alpha <= threshold) continue;
+
+          if (x < minX) minX = x;
+          if (y < minY) minY = y;
+          if (x > maxX) maxX = x;
+          if (y > maxY) maxY = y;
+        }
+      }
+
+      if (maxX < minX || maxY < minY) return null;
+
+      return {
+        x: minX,
+        y: minY,
+        width: maxX - minX + 1,
+        height: maxY - minY + 1,
+      };
+    }
+
+    /**
+     * Возвращает весь PNG как bounds, если trim отключен.
+     */
+    function createFullImageBounds(width, height) {
+      return {
+        x: 0,
+        y: 0,
+        width: Math.max(1, width),
+        height: Math.max(1, height),
+      };
+    }
+
+    /**
+     * Для полностью прозрачного PNG пакуем один прозрачный пиксель и сохраняем sourceSize.
+     */
+    function createEmptyImageBounds(sourceWidth, sourceHeight) {
+      return {
+        x: 0,
+        y: 0,
+        width: Math.min(1, Math.max(1, sourceWidth)),
+        height: Math.min(1, Math.max(1, sourceHeight)),
+      };
+    }
+
+    /**
+     * Создает отдельный canvas с уже обрезанным содержимым.
+     */
+    function drawTrimmedImageToCanvas(sourceCanvas, bounds) {
+      const canvas = document.createElement("canvas");
+      canvas.width = bounds.width;
+      canvas.height = bounds.height;
+
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        throw new Error("Canvas 2D context is not available");
+      }
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(
+        sourceCanvas,
+        bounds.x,
+        bounds.y,
+        bounds.width,
+        bounds.height,
+        0,
+        0,
+        bounds.width,
+        bounds.height,
+      );
+
+      return canvas;
+    }
+
+    /**
+     * Проверяет, изменил ли trim исходные размеры/смещение.
+     */
+    function isTrimmedBounds(bounds, sourceWidth, sourceHeight) {
+      return (
+        bounds.x !== 0 ||
+        bounds.y !== 0 ||
+        bounds.width !== sourceWidth ||
+        bounds.height !== sourceHeight
+      );
     }
 
     /**
@@ -781,15 +1633,26 @@ export class ${sceneClassName} extends Phaser.Scene {
       let preparedImages = [];
 
       try {
-        preparedImages = await prepareImagesForPacking(exportPayload.files);
+        preparedImages = await prepareImagesForPacking(exportPayload.files, ATLAS_PACKER_OPTIONS);
+        const trimStats = calculateTrimStats(preparedImages);
 
-        setStatus("Упаковка atlas (shelf-packer)…");
-        const packResult = packImagesShelf(preparedImages, ATLAS_PACKER_OPTIONS);
+        setStatus(`Упаковка atlas (${ATLAS_PACKER_OPTIONS.algorithm})…`);
+        const packResult = packImagesForAtlas(preparedImages, ATLAS_PACKER_OPTIONS);
+        if (packResult.fallbackReason) {
+          appendLog(`WARN: MaxRects fallback to shelf: ${packResult.fallbackReason}`);
+        }
+        const atlasUsage = calculateAtlasUsage(packResult);
+        const rotatedCount = countRotatedPlacements(packResult);
 
         setStatus(
           `Рендер atlas PNG…\n` +
+          `Пэкер: ${packResult.algorithm}\n` +
+          `Эвристика: ${packResult.heuristic || "n/a"}\n` +
           `Размер atlas: ${packResult.atlasWidth}x${packResult.atlasHeight}\n` +
-          `Frames: ${packResult.placements.length}`,
+          `Frames: ${packResult.placements.length}\n` +
+          `Rotated: ${rotatedCount}\n` +
+          `Trimmed: ${trimStats.trimmedCount}, saved ${formatPercent(trimStats.savedRatio)}\n` +
+          `Заполнение: ${formatAtlasUsagePercent(atlasUsage)}`,
         );
         const atlasPngBytes = await renderAtlasPng(packResult);
 
@@ -845,12 +1708,17 @@ export class ${sceneClassName} extends Phaser.Scene {
         exportPayload = msg;
         packNameInput.value = slugify(msg.packName || "pack");
         downloadZipButton.disabled = false;
+        const unsafeNameWarnings = getUnsafeNameWarningsFromPayload(msg);
+        const unsafeNameWarningText = unsafeNameWarnings.length > 0
+          ? `\n\nПредупреждения по именам:\n${formatUnsafeNameWarningsForStatus(unsafeNameWarnings)}`
+          : "";
         setStatus(
           `Экспорт завершен.\n` +
           `Pack: ${packNameInput.value}\n` +
           `Atlas base path: ${normalizeAtlasBasePath(atlasBasePathInput.value)}\n` +
           `PNG файлов: ${msg.files.length}\n` +
-          `Нажмите \"Скачать ZIP\".`,
+          `Нажмите \"Скачать ZIP\".` +
+          unsafeNameWarningText,
         );
         return;
       }

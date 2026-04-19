@@ -23,6 +23,9 @@ const IMAGE_EXPORT_SETTINGS = Object.freeze({
   useAbsoluteBounds: false,
 });
 
+const SAFE_FILE_BASE_NAME_RE = /^[A-Za-z0-9._-]+$/;
+const SAFE_FILE_BASE_NAME_CHAR_RE = /^[A-Za-z0-9._-]$/;
+
 figma.showUI(__html__, {
   width: UI_WIDTH,
   height: UI_HEIGHT,
@@ -50,10 +53,19 @@ async function runExportFromSelection() {
   }
 
   const packName = slugify(root.name || "pack");
+  const unsafeNameWarnings = collectUnsafeNameWarnings({
+    root,
+    children: topChildren,
+    rootSafeName: packName,
+  });
   const usedFileBaseNames = new Set();
   const files = [];
   const manifestItems = [];
   const skipped = [];
+
+  if (unsafeNameWarnings.length > 0) {
+    postUiLog(formatUnsafeNameWarningText(unsafeNameWarnings), "warn");
+  }
 
   for (let index = 0; index < topChildren.length; index += 1) {
     const child = topChildren[index];
@@ -129,6 +141,9 @@ async function runExportFromSelection() {
     },
     items: manifestItems,
     skipped,
+    warnings: {
+      unsafeNames: unsafeNameWarnings,
+    },
   };
 
   figma.ui.postMessage({
@@ -217,6 +232,95 @@ function makeUniqueFileBaseName(props) {
 
   used.add(next);
   return next;
+}
+
+/**
+ * Собирает предупреждения по исходным именам, которые нельзя безопасно использовать как file names.
+ */
+function collectUnsafeNameWarnings(props) {
+  const { root, children, rootSafeName } = props;
+  const warnings = [];
+  const rootWarning = createUnsafeNameWarning({
+    node: root,
+    role: "root",
+    safeName: rootSafeName,
+  });
+
+  if (rootWarning) {
+    warnings.push(rootWarning);
+  }
+
+  children.forEach((child) => {
+    const warning = createUnsafeNameWarning({
+      node: child,
+      role: "child",
+      safeName: slugify(child.name || child.id),
+    });
+
+    if (warning) {
+      warnings.push(warning);
+    }
+  });
+
+  return warnings;
+}
+
+/**
+ * Создает предупреждение по одному узлу или возвращает null, если имя безопасно.
+ */
+function createUnsafeNameWarning(props) {
+  const { node, role, safeName } = props;
+  const name = String((node && (node.name || node.id)) || "");
+  if (isSafeFileBaseName(name)) return null;
+
+  return {
+    role,
+    nodeId: node && node.id,
+    name,
+    safeName,
+    invalidCharacters: collectUnsafeFileNameCharacters(name),
+  };
+}
+
+/**
+ * Проверяет строгий формат имени файла: латиница, цифры, точка, underscore и дефис.
+ */
+function isSafeFileBaseName(input) {
+  const value = String(input || "");
+  return value.length > 0 && SAFE_FILE_BASE_NAME_RE.test(value);
+}
+
+/**
+ * Возвращает уникальный список запрещенных символов для отображения в предупреждении.
+ */
+function collectUnsafeFileNameCharacters(input) {
+  const seen = new Set();
+  const result = [];
+
+  Array.from(String(input || "")).forEach((char) => {
+    if (SAFE_FILE_BASE_NAME_CHAR_RE.test(char) || seen.has(char)) return;
+    seen.add(char);
+    result.push(char);
+  });
+
+  return result;
+}
+
+/**
+ * Формирует компактный текст предупреждения для UI-лога.
+ */
+function formatUnsafeNameWarningText(warnings) {
+  const lines = warnings.map((warning) => {
+    const invalid = warning.invalidCharacters
+      .map((char) => JSON.stringify(char))
+      .join(", ");
+    return `- ${warning.role} "${warning.name}" -> "${warning.safeName}" (${invalid})`;
+  });
+
+  return [
+    "Найдены небезопасные имена для файлов. Разрешены только A-Z, a-z, 0-9, точка, underscore и дефис:",
+    ...lines,
+  ].join("\n");
 }
 
 /**
