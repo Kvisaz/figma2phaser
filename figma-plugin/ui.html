@@ -573,10 +573,24 @@
 
     /**
      * Возвращает следующий допустимый размер atlas.
+     *
+     * Для non-POT atlas нельзя идти с мелким шагом до maxAtlasSize:
+     * это превращает packing в десятки тысяч попыток width/height/heuristic.
+     * Адаптивный шаг оставляет плотный поиск на малых размерах и быстро
+     * разрежает кандидаты на больших atlas.
+     *
+     * Если снова нужно ускорять:
+     * - увеличивать пороги шагов ниже;
+     * - уменьшать maxAtlasSize;
+     * - сокращать список ATLAS_PACKER_OPTIONS.heuristics.
      */
     function getNextAtlasCandidateSize(value, options) {
       if (options.powerOfTwo !== false) return value * 2;
-      return value + 64;
+      if (value < 512) return value + 64;
+      if (value < 1024) return value + 128;
+      if (value < 2048) return value + 256;
+      if (value < 4096) return value + 512;
+      return value + 1024;
     }
 
     /**
@@ -1058,6 +1072,22 @@
      */
     function formatPercent(value) {
       return `${(value * 100).toFixed(1)}%`;
+    }
+
+    /**
+     * Форматирует длительность генерации для UI-лога.
+     * Таймер нужен для быстрой проверки, не раздулся ли перебор atlas-кандидатов.
+     */
+    function formatDuration(milliseconds) {
+      const totalSeconds = Math.max(0, Math.round(milliseconds / 1000));
+      const minutes = Math.floor(totalSeconds / 60);
+      const seconds = totalSeconds % 60;
+
+      if (minutes <= 0) {
+        return `${seconds} секунд`;
+      }
+
+      return `${minutes} минут ${seconds} секунд`;
     }
 
     /**
@@ -1631,6 +1661,7 @@ export class ${sceneClassName} extends Phaser.Scene {
       downloadZipButton.disabled = true;
 
       let preparedImages = [];
+      const generationStartedAt = Date.now();
 
       try {
         preparedImages = await prepareImagesForPacking(exportPayload.files, ATLAS_PACKER_OPTIONS);
@@ -1676,12 +1707,22 @@ export class ${sceneClassName} extends Phaser.Scene {
         });
 
         downloadBlob(zipBlob, `${packName}.zip`);
-        setStatus(`Готово. Скачан архив ${packName}.zip`);
+        const generationDurationText = formatDuration(Date.now() - generationStartedAt);
+        appendLog(`Генерация заняла время: ${generationDurationText}`);
+        setStatus(
+          `Готово. Скачан архив ${packName}.zip\n` +
+          `Генерация заняла время: ${generationDurationText}`,
+        );
 
         postToPlugin({ type: "EXPORT_DONE" });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        setStatus(`Ошибка при создании ZIP:\n${message}`);
+        const generationDurationText = formatDuration(Date.now() - generationStartedAt);
+        appendLog(`Генерация прервалась через: ${generationDurationText}`);
+        setStatus(
+          `Ошибка при создании ZIP:\n${message}\n\n` +
+          `Генерация прервалась через: ${generationDurationText}`,
+        );
         postToPlugin({ type: "EXPORT_ERROR", message });
       } finally {
         disposePreparedImages(preparedImages);
