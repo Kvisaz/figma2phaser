@@ -86,6 +86,19 @@
   </div>
 
   <div class="row">
+    <label>
+      serverUrl
+      <input
+        id="serverUrlInput"
+        type="text"
+        value="http://localhost:3456"
+        placeholder="http://localhost:3456"
+      />
+    </label>
+  </div>
+
+  <div class="row">
+    <button id="syncToGame" disabled>Синхронизировать в игру</button>
     <button id="downloadZip" disabled>Скачать ZIP</button>
     <button id="retry">Повторить экспорт</button>
     <button id="close">Закрыть</button>
@@ -98,14 +111,18 @@
      */
     let exportPayload = null;
     const DEFAULT_ATLAS_BASE_PATH = "./assets/atlases/";
+    const DEFAULT_SERVER_URL = "http://localhost:3456";
 
     const packNameInput = document.getElementById("packNameInput");
     const atlasBasePathInput = document.getElementById("atlasBasePathInput");
+    const serverUrlInput = document.getElementById("serverUrlInput");
+    const syncToGameButton = document.getElementById("syncToGame");
     const downloadZipButton = document.getElementById("downloadZip");
     const retryButton = document.getElementById("retry");
     const closeButton = document.getElementById("close");
     const statusNode = document.getElementById("status");
     atlasBasePathInput.value = DEFAULT_ATLAS_BASE_PATH;
+    serverUrlInput.value = DEFAULT_SERVER_URL;
     let currentStatusText = "Ожидание данных из Figma…";
     const statusLogLines = [];
 
@@ -1602,6 +1619,71 @@ export class ${sceneClassName} extends Phaser.Scene {
       };
     }
 
+    function normalizeServerUrl(input) {
+      const value = String(input || "").trim();
+      return value || DEFAULT_SERVER_URL;
+    }
+
+    function toBase64FromBytes(bytes) {
+      let binary = "";
+      const chunkSize = 0x8000;
+      for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+        const chunk = bytes.subarray(offset, offset + chunkSize);
+        binary += String.fromCharCode(...chunk);
+      }
+      return btoa(binary);
+    }
+
+    async function postToCompanionServer(props) {
+      const { serverUrl, packName, payload, atlasPngBytes, atlasJson, sceneSources, atlasBasePath } = props;
+
+      const requestBody = {
+        packName,
+        atlasBasePath,
+        manifest: {
+          ...payload.manifest,
+          packName,
+        },
+        files: payload.files.map((file) => ({
+          fileName: file.fileName,
+          bytesBase64: toBase64FromBytes(file.bytes),
+        })),
+        atlas: {
+          pngFileName: `${packName}.png`,
+          jsonFileName: `${packName}.json`,
+          pngBytesBase64: toBase64FromBytes(atlasPngBytes),
+          json: atlasJson,
+        },
+        sceneSources,
+      };
+
+      const response = await fetch(`${normalizeServerUrl(serverUrl)}/export`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(requestBody),
+      });
+
+      const responseText = await response.text();
+      let responseJson = null;
+
+      try {
+        responseJson = responseText ? JSON.parse(responseText) : null;
+      } catch (error) {
+        responseJson = null;
+      }
+
+      if (!response.ok) {
+        const serverMessage = responseJson && responseJson.error
+          ? responseJson.error
+          : responseText || `HTTP ${response.status}`;
+        throw new Error(`Companion server error: ${serverMessage}`);
+      }
+
+      return responseJson;
+    }
+
     /**
      * Собирает весь ZIP-архив в нужной структуре папок.
      */
@@ -1645,12 +1727,12 @@ export class ${sceneClassName} extends Phaser.Scene {
     }
 
     /**
-     * Полный сценарий: atlas pack + генерация TS + ZIP.
+     * Готовит atlas + JSON + TS-исходники один раз, чтобы потом либо скачать ZIP,
+     * либо отправить результат в локальный companion server.
      */
-    async function downloadZip() {
+    async function prepareGeneratedArtifacts() {
       if (!exportPayload) {
-        setStatus("Нет данных для скачивания. Сначала выполните экспорт.");
-        return;
+        throw new Error("Нет данных экспорта. Сначала выполните экспорт из Figma.");
       }
 
       const packName = slugify(packNameInput.value || exportPayload.packName || "pack");
@@ -1658,10 +1740,7 @@ export class ${sceneClassName} extends Phaser.Scene {
       packNameInput.value = packName;
       atlasBasePathInput.value = atlasBasePath;
 
-      downloadZipButton.disabled = true;
-
       let preparedImages = [];
-      const generationStartedAt = Date.now();
 
       try {
         preparedImages = await prepareImagesForPacking(exportPayload.files, ATLAS_PACKER_OPTIONS);
@@ -1676,13 +1755,20 @@ export class ${sceneClassName} extends Phaser.Scene {
         const rotatedCount = countRotatedPlacements(packResult);
 
         setStatus(
-          `Рендер atlas PNG…\n` +
-          `Пэкер: ${packResult.algorithm}\n` +
-          `Эвристика: ${packResult.heuristic || "n/a"}\n` +
-          `Размер atlas: ${packResult.atlasWidth}x${packResult.atlasHeight}\n` +
-          `Frames: ${packResult.placements.length}\n` +
-          `Rotated: ${rotatedCount}\n` +
-          `Trimmed: ${trimStats.trimmedCount}, saved ${formatPercent(trimStats.savedRatio)}\n` +
+          `Рендер atlas PNG…
+` +
+          `Пэкер: ${packResult.algorithm}
+` +
+          `Эвристика: ${packResult.heuristic || "n/a"}
+` +
+          `Размер atlas: ${packResult.atlasWidth}x${packResult.atlasHeight}
+` +
+          `Frames: ${packResult.placements.length}
+` +
+          `Rotated: ${rotatedCount}
+` +
+          `Trimmed: ${trimStats.trimmedCount}, saved ${formatPercent(trimStats.savedRatio)}
+` +
           `Заполнение: ${formatAtlasUsagePercent(atlasUsage)}`,
         );
         const atlasPngBytes = await renderAtlasPng(packResult);
@@ -1697,20 +1783,53 @@ export class ${sceneClassName} extends Phaser.Scene {
           atlasBasePath,
         });
 
+        return {
+          packName,
+          atlasBasePath,
+          atlasJson,
+          atlasPngBytes,
+          sceneSources,
+          preparedImages,
+        };
+      } catch (error) {
+        disposePreparedImages(preparedImages);
+        throw error;
+      }
+    }
+
+    /**
+     * Полный сценарий: atlas pack + генерация TS + ZIP.
+     */
+    async function downloadZip() {
+      if (!exportPayload) {
+        setStatus("Нет данных для скачивания. Сначала выполните экспорт.");
+        return;
+      }
+
+      downloadZipButton.disabled = true;
+      syncToGameButton.disabled = true;
+      const generationStartedAt = Date.now();
+      let preparedImages = [];
+
+      try {
+        const artifacts = await prepareGeneratedArtifacts();
+        preparedImages = artifacts.preparedImages;
+
         setStatus("Сборка ZIP структуры…");
         const zipBlob = await buildZipArchive({
-          packName,
+          packName: artifacts.packName,
           payload: exportPayload,
-          atlasPngBytes,
-          atlasJson,
-          sceneSources,
+          atlasPngBytes: artifacts.atlasPngBytes,
+          atlasJson: artifacts.atlasJson,
+          sceneSources: artifacts.sceneSources,
         });
 
-        downloadBlob(zipBlob, `${packName}.zip`);
+        downloadBlob(zipBlob, `${artifacts.packName}.zip`);
         const generationDurationText = formatDuration(Date.now() - generationStartedAt);
         appendLog(`Генерация заняла время: ${generationDurationText}`);
         setStatus(
-          `Готово. Скачан архив ${packName}.zip\n` +
+          `Готово. Скачан архив ${artifacts.packName}.zip
+` +
           `Генерация заняла время: ${generationDurationText}`,
         );
 
@@ -1720,13 +1839,82 @@ export class ${sceneClassName} extends Phaser.Scene {
         const generationDurationText = formatDuration(Date.now() - generationStartedAt);
         appendLog(`Генерация прервалась через: ${generationDurationText}`);
         setStatus(
-          `Ошибка при создании ZIP:\n${message}\n\n` +
+          `Ошибка при создании ZIP:
+${message}
+
+` +
           `Генерация прервалась через: ${generationDurationText}`,
         );
         postToPlugin({ type: "EXPORT_ERROR", message });
       } finally {
         disposePreparedImages(preparedImages);
         downloadZipButton.disabled = false;
+        syncToGameButton.disabled = false;
+      }
+    }
+
+    async function syncToGame() {
+      if (!exportPayload) {
+        setStatus("Нет данных для синхронизации. Сначала выполните экспорт.");
+        return;
+      }
+
+      downloadZipButton.disabled = true;
+      syncToGameButton.disabled = true;
+      const generationStartedAt = Date.now();
+      let preparedImages = [];
+
+      try {
+        const artifacts = await prepareGeneratedArtifacts();
+        preparedImages = artifacts.preparedImages;
+        const serverUrl = normalizeServerUrl(serverUrlInput.value);
+        serverUrlInput.value = serverUrl;
+
+        setStatus(`Отправка в companion server…
+${serverUrl}`);
+        const responseJson = await postToCompanionServer({
+          serverUrl,
+          packName: artifacts.packName,
+          payload: exportPayload,
+          atlasPngBytes: artifacts.atlasPngBytes,
+          atlasJson: artifacts.atlasJson,
+          sceneSources: artifacts.sceneSources,
+          atlasBasePath: artifacts.atlasBasePath,
+        });
+
+        const generationDurationText = formatDuration(Date.now() - generationStartedAt);
+        appendLog(`Синхронизация заняла время: ${generationDurationText}`);
+        setStatus(
+          `Готово. Файлы записаны в игру.
+` +
+          `Pack: ${artifacts.packName}
+` +
+          `Server: ${serverUrl}
+` +
+          `Atlas dir: ${responseJson && responseJson.atlasOutputDir ? responseJson.atlasOutputDir : "n/a"}
+` +
+          `Scene dir: ${responseJson && responseJson.sceneOutputDir ? responseJson.sceneOutputDir : "n/a"}
+` +
+          `Синхронизация заняла время: ${generationDurationText}`,
+        );
+
+        postToPlugin({ type: "EXPORT_DONE" });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const generationDurationText = formatDuration(Date.now() - generationStartedAt);
+        appendLog(`Синхронизация прервалась через: ${generationDurationText}`);
+        setStatus(
+          `Ошибка синхронизации:
+${message}
+
+` +
+          `Синхронизация прервалась через: ${generationDurationText}`,
+        );
+        postToPlugin({ type: "EXPORT_ERROR", message });
+      } finally {
+        disposePreparedImages(preparedImages);
+        downloadZipButton.disabled = false;
+        syncToGameButton.disabled = false;
       }
     }
 
@@ -1749,6 +1937,7 @@ export class ${sceneClassName} extends Phaser.Scene {
         exportPayload = msg;
         packNameInput.value = slugify(msg.packName || "pack");
         downloadZipButton.disabled = false;
+        syncToGameButton.disabled = false;
         const unsafeNameWarnings = getUnsafeNameWarningsFromPayload(msg);
         const unsafeNameWarningText = unsafeNameWarnings.length > 0
           ? `\n\nПредупреждения по именам:\n${formatUnsafeNameWarningsForStatus(unsafeNameWarnings)}`
@@ -1779,6 +1968,10 @@ export class ${sceneClassName} extends Phaser.Scene {
     };
 
     // Кнопки управления UI.
+    syncToGameButton.addEventListener("click", () => {
+      syncToGame();
+    });
+
     downloadZipButton.addEventListener("click", () => {
       downloadZip();
     });

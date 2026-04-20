@@ -7,7 +7,11 @@
   "ui": "ui.html",
   "documentAccess": "dynamic-page",
   "networkAccess": {
-    "allowedDomains": ["https://cdn.jsdelivr.net"],
-    "reasoning": "UI loads JSZip from jsdelivr for ZIP generation"
+    "allowedDomains": [
+      "https://cdn.jsdelivr.net",
+      "http://localhost:3456",
+      "ws://localhost:3456"
+    ],
+    "reasoning": "UI loads JSZip from jsdelivr and sends generated Phaser export to a local companion server"
   }
 }
