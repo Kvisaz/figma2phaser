@@ -8,6 +8,15 @@ const PORT = 3456;
 const SETTINGS_FILE_PATH = path.join(__dirname, "settings.local.json");
 
 /**
+ * ============================================================================
+ * Static Configuration
+ * ============================================================================
+ *
+ * Constants below define fallback paths and request limits. Runtime output paths
+ * can still be overridden from the server settings page.
+ */
+
+/**
  * Значения по умолчанию. Их можно переопределить из UI плагина.
  */
 const GAME_ROOT_DIR = "/Users/sergeytokarev/work_my/YOUR_GAME_PROJECT";
@@ -28,6 +37,17 @@ const SCENE_OUTPUT_DIR = path.join(GAME_ROOT_DIR, "src", "autogen");
  */
 const MAX_BODY_SIZE_BYTES = 200 * 1024 * 1024;
 
+/**
+ * ============================================================================
+ * HTTP Response Helpers
+ * ============================================================================
+ *
+ * Small helpers for sending JSON and HTML responses with consistent headers.
+ */
+
+/**
+ * Sends a JSON response with CORS headers for Figma plugin requests.
+ */
 function sendJson(response, statusCode, payload) {
     const body = JSON.stringify(payload, null, 2);
 
@@ -41,6 +61,9 @@ function sendJson(response, statusCode, payload) {
     response.end(body);
 }
 
+/**
+ * Sends an HTML response for the server settings page.
+ */
 function sendHtml(response, statusCode, html) {
     response.writeHead(statusCode, {
         "Content-Type": "text/html; charset=utf-8",
@@ -48,20 +71,49 @@ function sendHtml(response, statusCode, html) {
     response.end(html);
 }
 
+/**
+ * ============================================================================
+ * Filesystem Helpers
+ * ============================================================================
+ *
+ * Helpers for creating directories and writing generated output files.
+ */
+
+/**
+ * Creates a directory recursively if it does not exist.
+ */
 function ensureDirectoryExists(directoryPath) {
     fs.mkdirSync(directoryPath, { recursive: true });
 }
 
+/**
+ * Writes UTF-8 text and creates the parent directory first.
+ */
 function writeTextFile(filePath, content) {
     ensureDirectoryExists(path.dirname(filePath));
     fs.writeFileSync(filePath, content, "utf8");
 }
 
+/**
+ * Writes binary data and creates the parent directory first.
+ */
 function writeBinaryFile(filePath, buffer) {
     ensureDirectoryExists(path.dirname(filePath));
     fs.writeFileSync(filePath, buffer);
 }
 
+/**
+ * ============================================================================
+ * Settings Page HTML
+ * ============================================================================
+ *
+ * The server root route renders this standalone settings page. It lets the user
+ * configure local output directories outside the Figma plugin sandbox.
+ */
+
+/**
+ * Escapes text before inserting settings values into the HTML page.
+ */
 function escapeHtml(input) {
     return String(input || "")
         .replace(/&/g, "&amp;")
@@ -71,6 +123,9 @@ function escapeHtml(input) {
         .replace(/'/g, "&#39;");
 }
 
+/**
+ * Builds the standalone settings page served from GET /.
+ */
 function createSettingsPageHtml() {
     const settings = readSettings();
     return `<!doctype html>
@@ -225,12 +280,18 @@ function createSettingsPageHtml() {
     const tsInput = document.getElementById("tsOutputDir");
     const logNode = document.getElementById("log");
 
+    /**
+     * Appends a timestamped message to the page log.
+     */
     function log(message) {
       const time = new Date().toLocaleTimeString();
       logNode.textContent += "\\n[" + time + "] " + message;
       logNode.scrollTop = logNode.scrollHeight;
     }
 
+    /**
+     * Calls a JSON API endpoint and throws on non-ok responses.
+     */
     async function requestJson(url, options) {
       const response = await fetch(url, options);
       const text = await response.text();
@@ -241,6 +302,9 @@ function createSettingsPageHtml() {
       return payload;
     }
 
+    /**
+     * Saves manually edited output paths to the server settings file.
+     */
     async function saveSettings() {
       const payload = await requestJson("/api/server/settings", {
         method: "POST",
@@ -255,6 +319,9 @@ function createSettingsPageHtml() {
       log("Settings saved.");
     }
 
+    /**
+     * Opens the native folder picker through the server API.
+     */
     async function chooseDirectory(kind) {
       const payload = await requestJson("/api/server/choose-directory", {
         method: "POST",
@@ -266,6 +333,9 @@ function createSettingsPageHtml() {
       log((kind === "atlas" ? "Atlas" : "TS") + " folder: " + payload.directory);
     }
 
+    /**
+     * Validates that configured output folders are writable.
+     */
     async function validateSettings() {
       const payload = await requestJson("/api/server/validate-settings", {
         method: "POST",
@@ -295,6 +365,18 @@ function createSettingsPageHtml() {
 </html>`;
 }
 
+/**
+ * ============================================================================
+ * Persistent Settings
+ * ============================================================================
+ *
+ * Settings are stored next to the server in settings.local.json. They are local
+ * machine state and should not be committed.
+ */
+
+/**
+ * Reads output path settings from disk and falls back to defaults.
+ */
 function readSettings() {
     const defaults = {
         atlasOutputDir: ATLAS_OUTPUT_DIR,
@@ -316,6 +398,9 @@ function readSettings() {
     }
 }
 
+/**
+ * Normalizes and writes output path settings to disk.
+ */
 function writeSettings(settings) {
     const normalized = normalizeSettings({
         ...readSettings(),
@@ -325,6 +410,9 @@ function writeSettings(settings) {
     return normalized;
 }
 
+/**
+ * Applies defaults and absolute-path normalization to settings.
+ */
 function normalizeSettings(settings) {
     return {
         atlasOutputDir: normalizeOutputDirectory(settings.atlasOutputDir || ATLAS_OUTPUT_DIR),
@@ -332,12 +420,18 @@ function normalizeSettings(settings) {
     };
 }
 
+/**
+ * Converts an output directory to an absolute filesystem path.
+ */
 function normalizeOutputDirectory(input) {
     const value = String(input || "").trim();
     if (!value) return "";
     return path.resolve(value);
 }
 
+/**
+ * Opens the macOS native folder picker and resolves the selected path.
+ */
 function chooseDirectoryWithMacDialog(promptText) {
     return new Promise((resolve, reject) => {
         execFile("osascript", [
@@ -354,6 +448,9 @@ function chooseDirectoryWithMacDialog(promptText) {
     });
 }
 
+/**
+ * Verifies that a directory exists or can be created and is writable.
+ */
 function validateDirectoryPath(directoryPath) {
     const normalized = normalizeOutputDirectory(directoryPath);
 
@@ -381,6 +478,17 @@ function validateDirectoryPath(directoryPath) {
     }
 }
 
+/**
+ * ============================================================================
+ * Naming and Path Normalization
+ * ============================================================================
+ *
+ * Helpers used by atlas generation and TypeScript source generation.
+ */
+
+/**
+ * Converts arbitrary text into a safe pack/file base name.
+ */
 function sanitizePackName(input) {
     const value = String(input || "")
         .normalize("NFKD")
@@ -393,6 +501,9 @@ function sanitizePackName(input) {
     return value || "pack";
 }
 
+/**
+ * Converts a pack or frame name to a safe camelCase identifier.
+ */
 function toCamelCase(input) {
     const safe = sanitizePackName(input);
     const tokens = safe
@@ -412,11 +523,17 @@ function toCamelCase(input) {
     return /^[0-9]/.test(result) ? `n${result}` : result;
 }
 
+/**
+ * Converts a pack or frame name to a safe PascalCase identifier.
+ */
 function toPascalCase(input) {
     const camelCaseValue = toCamelCase(input);
     return camelCaseValue.charAt(0).toUpperCase() + camelCaseValue.slice(1);
 }
 
+/**
+ * Normalizes the runtime atlas URL base path used by generated Phaser preload code.
+ */
 function normalizeAtlasBasePath(input) {
     const raw = String(input || "").trim();
     let next = (raw || "./assets/atlases/").replace(/\\/g, "/");
@@ -436,6 +553,17 @@ function normalizeAtlasBasePath(input) {
     return next;
 }
 
+/**
+ * ============================================================================
+ * Request Parsing and Payload Validation
+ * ============================================================================
+ *
+ * Helpers for API handlers that read and validate JSON payloads.
+ */
+
+/**
+ * Reads and parses a JSON body with a hard size limit.
+ */
 function readJsonBody(request) {
     return new Promise((resolve, reject) => {
         const chunks = [];
@@ -469,6 +597,9 @@ function readJsonBody(request) {
     });
 }
 
+/**
+ * Validates the minimum shape required for a Figma export payload.
+ */
 function validateExportPayload(payload) {
     if (!payload || typeof payload !== "object") {
         throw new Error("Payload must be an object");
@@ -487,6 +618,9 @@ function validateExportPayload(payload) {
     }
 }
 
+/**
+ * Indexes manifest items by generated PNG file name.
+ */
 function collectManifestItemsByFileName(manifest) {
     const result = new Map();
 
@@ -499,6 +633,18 @@ function collectManifestItemsByFileName(manifest) {
     return result;
 }
 
+/**
+ * ============================================================================
+ * Texture Packer Input/Output Helpers
+ * ============================================================================
+ *
+ * Converts Figma-exported PNG payloads into free-tex-packer input and indexes
+ * its generated output files.
+ */
+
+/**
+ * Converts encoded PNG entries into free-tex-packer image descriptors.
+ */
 function buildTexturePackerImages(files) {
     return files.map((file) => {
         if (!file || typeof file !== "object") {
@@ -527,6 +673,9 @@ function buildTexturePackerImages(files) {
     });
 }
 
+/**
+ * Indexes packed atlas output buffers by output file name.
+ */
 function extractPackedFilesByName(packedFiles) {
     const result = new Map();
 
@@ -537,11 +686,26 @@ function extractPackedFilesByName(packedFiles) {
     return result;
 }
 
+/**
+ * ============================================================================
+ * Phaser TypeScript Source Generation
+ * ============================================================================
+ *
+ * Restores the old generated runtime layer: typed asset metadata, helpers for
+ * placing image/nine-slice objects, asset registry, and preview scene.
+ */
+
+/**
+ * Builds a runtime atlas file URL from a normalized base path and file name.
+ */
 function buildAtlasFilePath(basePath, fileName) {
     const cleanFileName = String(fileName || "").replace(/^\/+/, "");
     return `${normalizeAtlasBasePath(basePath)}${cleanFileName}`;
 }
 
+/**
+ * Creates a unique safe asset key for generated TypeScript object properties.
+ */
 function createUniqueAssetKey(rawName, used) {
     const base = toCamelCase(rawName);
     let next = base || "asset";
@@ -556,6 +720,9 @@ function createUniqueAssetKey(rawName, used) {
     return next;
 }
 
+/**
+ * Extracts nine-slice padding from names like "button.nine.20".
+ */
 function detectNinePadding(rawName) {
     const match = String(rawName || "").trim().match(/(?:^|[._-])nine\.(\d+)$/i);
     if (!match) return null;
@@ -564,6 +731,9 @@ function detectNinePadding(rawName) {
     return parsed;
 }
 
+/**
+ * Generates types.ts, utils.ts, [pack]-assets.ts, and [pack]-scene.ts.
+ */
 function buildPhaserSceneSources(props) {
     const { packName, manifest, atlasBasePath } = props;
     const packCamel = toCamelCase(packName);
@@ -651,6 +821,9 @@ export interface IAddAssetNineProps {
     const utilsTs = `// This file is auto-generated by figma2assets plugin. Do not edit manually.
 import { IAddAssetImageProps, IAddAssetNineProps } from "./types";
 
+/**
+ * Positions a Phaser object by its left-top corner.
+ */
 function setLeftTop<T extends Phaser.GameObjects.Components.Transform & Phaser.GameObjects.Components.Origin>(
   obj: T,
   x: number,
@@ -660,6 +833,9 @@ function setLeftTop<T extends Phaser.GameObjects.Components.Transform & Phaser.G
   return obj;
 }
 
+/**
+ * Adds an atlas image and positions it by Figma coordinates.
+ */
 export function addAssetImage(props: IAddAssetImageProps): Phaser.GameObjects.Image {
   const { scene, asset, x, y } = props;
   const targetX = x ?? asset.x;
@@ -668,6 +844,9 @@ export function addAssetImage(props: IAddAssetImageProps): Phaser.GameObjects.Im
   return setLeftTop(imageNode, targetX, targetY);
 }
 
+/**
+ * Adds a nine-slice object and positions it by Figma coordinates.
+ */
 export function addAssetNine(props: IAddAssetNineProps): Phaser.GameObjects.NineSlice {
   const { scene, asset, width, height, x, y } = props;
   const padding = asset.ninePadding ?? 20;
@@ -731,6 +910,9 @@ export const ${packCamel}AutoAssetsConfig: IAutoAssetsConfig = {
 export const ${packCamel}AutoAssets: AutoAssetMap = ${packCamel}AutoAssetsConfig.images;
 export const ${packCamel}AutoAtlas = ${packCamel}AutoAssetsConfig.preload.atlases[0];
 
+/**
+ * Preloads the generated atlas for this pack.
+ */
 export function ${preloadFunctionName}(scene: Phaser.Scene): void {
   ${packCamel}AutoAssetsConfig.preload.atlases.forEach((atlas) => {
     if (scene.textures.exists(atlas.pngUrl)) return;
@@ -773,6 +955,17 @@ export class ${sceneClassName} extends Phaser.Scene {
     };
 }
 
+/**
+ * ============================================================================
+ * Atlas JSON and Packing
+ * ============================================================================
+ *
+ * Runs free-tex-packer and normalizes its Phaser atlas JSON output.
+ */
+
+/**
+ * Rewrites atlas JSON metadata so meta.image points to the generated PNG name.
+ */
 function rewriteAtlasJsonMetaImage(atlasJsonText, packName) {
     let atlasJson;
 
@@ -789,6 +982,9 @@ function rewriteAtlasJsonMetaImage(atlasJsonText, packName) {
     return JSON.stringify(atlasJson, null, 2);
 }
 
+/**
+ * Packs exported PNG files into a Phaser 3 atlas with free-tex-packer.
+ */
 async function packAtlasWithFreeTexPacker(packName, images) {
     const options = {
         textureName: packName,
@@ -809,6 +1005,18 @@ async function packAtlasWithFreeTexPacker(packName, images) {
     return packAsync(images, options);
 }
 
+/**
+ * ============================================================================
+ * API Route Handlers
+ * ============================================================================
+ *
+ * Handlers below implement Figma export, server settings, folder picking, and
+ * settings validation endpoints.
+ */
+
+/**
+ * Handles POST /api/figma/export and writes generated atlas/TS files to disk.
+ */
 async function handleExportRequest(request, response) {
     const payload = await readJsonBody(request);
     validateExportPayload(payload);
@@ -907,6 +1115,9 @@ async function handleExportRequest(request, response) {
     });
 }
 
+/**
+ * Handles GET/POST /api/server/settings.
+ */
 async function handleSettingsRequest(request, response) {
     if (request.method === "GET") {
         sendJson(response, 200, {
@@ -931,6 +1142,9 @@ async function handleSettingsRequest(request, response) {
     });
 }
 
+/**
+ * Handles POST /api/server/choose-directory through the native folder picker.
+ */
 async function handleChooseDirectoryRequest(request, response) {
     if (request.method !== "POST") {
         sendJson(response, 405, {
@@ -962,6 +1176,9 @@ async function handleChooseDirectoryRequest(request, response) {
     });
 }
 
+/**
+ * Handles POST /api/server/validate-settings and checks output directories.
+ */
 async function handleValidateSettingsRequest(request, response) {
     if (request.method !== "POST") {
         sendJson(response, 405, {
@@ -986,6 +1203,18 @@ async function handleValidateSettingsRequest(request, response) {
     });
 }
 
+/**
+ * ============================================================================
+ * HTTP Router and Server Startup
+ * ============================================================================
+ *
+ * The router serves the settings page, server-management API, and Figma export
+ * API from one localhost process.
+ */
+
+/**
+ * Dispatches incoming HTTP requests to page, server API, or Figma API handlers.
+ */
 const server = http.createServer(async (request, response) => {
     try {
         const url = new URL(request.url || "/", `http://localhost:${PORT}`);
@@ -1050,6 +1279,9 @@ const server = http.createServer(async (request, response) => {
     }
 });
 
+/**
+ * Starts the companion server and prints the current settings summary.
+ */
 server.listen(PORT, () => {
     const settings = readSettings();
     console.log("[figma2phaser] companion server started");
