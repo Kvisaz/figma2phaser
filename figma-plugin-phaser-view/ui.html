@@ -77,6 +77,12 @@
       word-break: break-word;
     }
 
+    .mainActions {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+    }
+
     #exportButton {
       width: 100%;
       padding: 13px 16px;
@@ -89,6 +95,21 @@
 
     #exportButton:disabled {
       border-color: var(--figma-color-border);
+      background: var(--figma-color-bg-disabled);
+      color: var(--figma-color-text-disabled);
+    }
+
+    #assetsButton {
+      min-width: 96px;
+      padding: 13px 14px;
+      border-color: var(--figma-color-border);
+      background: var(--figma-color-bg-secondary);
+      color: var(--figma-color-text);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    #assetsButton:disabled {
       background: var(--figma-color-bg-disabled);
       color: var(--figma-color-text-disabled);
     }
@@ -138,7 +159,10 @@
     <div id="serverWarningText">Запустите server и проверьте serverUrl.</div>
   </div>
 
-  <button id="exportButton" type="button" disabled>Экспорт</button>
+  <div class="mainActions">
+    <button id="exportButton" type="button" disabled>Экспорт</button>
+    <button id="assetsButton" type="button" disabled>Ассеты</button>
+  </div>
 
   <div class="settingsGrid">
     <label>
@@ -178,6 +202,7 @@
     let isServerAvailable = false;
     let pendingExportToServer = false;
     let latestSelectionDiagnostic = null;
+    let latestPageState = null;
     let settings = {
       packName: "",
       atlasBasePath: DEFAULT_ATLAS_BASE_PATH,
@@ -187,6 +212,7 @@
     };
 
     const exportButton = document.getElementById("exportButton");
+    const assetsButton = document.getElementById("assetsButton");
     const packNameInput = document.getElementById("packNameInput");
     const atlasBasePathInput = document.getElementById("atlasBasePathInput");
     const serverUrlInput = document.getElementById("serverUrlInput");
@@ -278,11 +304,51 @@
       renderPathValue(atlasOutputDirItem, atlasOutputDirValue, settings.atlasOutputDir, "Путь atlas не задан");
       renderPathValue(tsOutputDirItem, tsOutputDirValue, settings.tsOutputDir, "Путь TS не задан");
       updateExportButtonState();
+      updateAssetsButtonState();
     }
 
     function updateExportButtonState() {
       const hasOutputPaths = Boolean(settings.atlasOutputDir && settings.tsOutputDir);
       exportButton.disabled = isExporting || !isServerAvailable || !hasOutputPaths;
+    }
+
+    function updateAssetsButtonState() {
+      const scan = latestPageState && latestPageState.scan;
+      assetsButton.disabled = Boolean(!scan || scan.hasAssetsFrames || isExporting);
+    }
+
+    function formatScanEntryLines(entries) {
+      if (!entries || entries.length === 0) {
+        return ["- не найдено"];
+      }
+
+      return entries.map((entry) => `- [${entry.type}] ${entry.path} (${entry.nodeId})`);
+    }
+
+    function formatPageScanDiagnostic(scan) {
+      if (!scan) return "Скан страницы недоступен";
+      return [
+        `Скан страницы "${scan.pageName}": просмотрено узлов ${scan.scannedNodesCount}`,
+        `Объекты view*: ${scan.viewNodes.length}`,
+        ...formatScanEntryLines(scan.viewNodes),
+        `Фреймы assets*: ${scan.assetsFrames.length}`,
+        ...formatScanEntryLines(scan.assetsFrames),
+      ].join("\n");
+    }
+
+    function handlePageState(pageState) {
+      latestPageState = pageState || null;
+      latestSelectionDiagnostic = latestPageState && latestPageState.selection;
+
+      if (latestPageState && latestPageState.scan) {
+        appendLog(formatPageScanDiagnostic(latestPageState.scan));
+      }
+
+      if (latestSelectionDiagnostic) {
+        appendLog(latestSelectionDiagnostic.message, latestSelectionDiagnostic.ok ? "info" : "warn");
+      }
+
+      updateAssetsButtonState();
     }
 
     function savePluginSettings() {
@@ -422,10 +488,17 @@
       postToPlugin({ type: "EXPORT_TO_PROJECT" });
     }
 
-    function handleSelectionDiagnostic(diagnostic) {
-      latestSelectionDiagnostic = diagnostic || null;
-      if (!latestSelectionDiagnostic) return;
-      appendLog(latestSelectionDiagnostic.message, latestSelectionDiagnostic.ok ? "info" : "warn");
+    function createAssetsFrame() {
+      const scan = latestPageState && latestPageState.scan;
+      if (!scan || scan.hasAssetsFrames) {
+        appendLog("Создание assets-core недоступно: assets* фрейм уже найден", "warn");
+        updateAssetsButtonState();
+        return;
+      }
+
+      assetsButton.disabled = true;
+      appendLog("Создание фрейма assets-core");
+      postToPlugin({ type: "CREATE_ASSETS_FRAME" });
     }
 
     window.onmessage = (event) => {
@@ -440,8 +513,7 @@
         renderSettings();
         appendLog("Настройки Figma загружены");
         fetchServerSettings();
-        postToPlugin({ type: "GET_CURRENT_PAGE_SCAN_DIAGNOSTIC" });
-        postToPlugin({ type: "GET_SELECTION_DIAGNOSTIC" });
+        postToPlugin({ type: "GET_PAGE_STATE" });
         return;
       }
 
@@ -451,7 +523,32 @@
       }
 
       if (msg.type === "SELECTION_DIAGNOSTIC") {
-        handleSelectionDiagnostic(msg.diagnostic);
+        latestSelectionDiagnostic = msg.diagnostic || null;
+        if (latestSelectionDiagnostic) {
+          appendLog(latestSelectionDiagnostic.message, latestSelectionDiagnostic.ok ? "info" : "warn");
+        }
+        return;
+      }
+
+      if (msg.type === "PAGE_STATE") {
+        handlePageState(msg.pageState);
+        return;
+      }
+
+      if (msg.type === "ASSETS_FRAME_CREATED") {
+        appendLog(`Фрейм создан: ${msg.frameName || "assets-core"}`);
+        return;
+      }
+
+      if (msg.type === "ASSETS_FRAME_ALREADY_EXISTS") {
+        appendLog("Фрейм assets* уже существует", "warn");
+        updateAssetsButtonState();
+        return;
+      }
+
+      if (msg.type === "ASSETS_FRAME_CREATE_FAILED") {
+        appendLog(msg.message || "Не удалось создать assets-core", "error");
+        updateAssetsButtonState();
         return;
       }
 
@@ -472,6 +569,7 @@
         if (!pendingExportToServer) {
           isExporting = false;
           updateExportButtonState();
+          updateAssetsButtonState();
           return;
         }
 
@@ -479,6 +577,7 @@
           isExporting = false;
           pendingExportToServer = false;
           updateExportButtonState();
+          updateAssetsButtonState();
         });
         return;
       }
@@ -488,6 +587,7 @@
         pendingExportToServer = false;
         appendLog(msg.message || "Ошибка экспорта из Figma", "error");
         updateExportButtonState();
+        updateAssetsButtonState();
         return;
       }
 
@@ -497,6 +597,7 @@
     };
 
     exportButton.addEventListener("click", startExport);
+    assetsButton.addEventListener("click", createAssetsFrame);
 
     [packNameInput, atlasBasePathInput, serverUrlInput].forEach((input) => {
       input.addEventListener("change", () => {

@@ -11,6 +11,10 @@
 const UI_WIDTH = 520;
 const UI_HEIGHT = 360;
 const SETTINGS_STORAGE_KEY = "figma-phaser-view-export-settings";
+const ASSETS_CORE_FRAME_NAME = "assets-core";
+const ASSETS_CORE_FRAME_WIDTH = 1920;
+const ASSETS_CORE_FRAME_HEIGHT = 3600;
+const ASSETS_CORE_FRAME_OFFSET_X = 200;
 
 /**
  * Настройки экспорта PNG для каждого верхнего ребенка.
@@ -33,9 +37,36 @@ figma.showUI(__html__, {
   themeColors: true,
 });
 
-const startupCurrentPageScanDiagnostic = getCurrentPageScanDiagnostic();
+postPageState();
 
-postSelectionDiagnostic();
+/**
+ * ============================================================================
+ * Page State
+ * ============================================================================
+ *
+ * Combines selection diagnostics and current page scan into one UI state update.
+ */
+
+/**
+ * Отправляет текущее состояние страницы в UI.
+ */
+function postPageState() {
+  const pageState = getPageState();
+  figma.ui.postMessage({
+    type: "PAGE_STATE",
+    pageState,
+  });
+}
+
+/**
+ * Собирает selection diagnostic и scan diagnostic в один объект состояния.
+ */
+function getPageState() {
+  return {
+    selection: getSelectionDiagnostic(),
+    scan: getCurrentPageScanDiagnostic(),
+  };
+}
 
 /**
  * ============================================================================
@@ -47,13 +78,6 @@ postSelectionDiagnostic();
  */
 
 /**
- * Сканирует текущую страницу и отправляет результат в UI-лог.
- */
-function postCurrentPageScanDiagnostic() {
-  postUiLog(formatCurrentPageScanDiagnostic(startupCurrentPageScanDiagnostic));
-}
-
-/**
  * Собирает диагностические списки по текущей странице Figma.
  */
 function getCurrentPageScanDiagnostic() {
@@ -63,9 +87,11 @@ function getCurrentPageScanDiagnostic() {
     viewNodes: [],
     assetsFrames: [],
     scannedNodesCount: 0,
+    hasAssetsFrames: false,
   };
 
   scanPageChildren(page.children, result);
+  result.hasAssetsFrames = result.assetsFrames.length > 0;
   return result;
 }
 
@@ -162,6 +188,69 @@ function formatScanEntryLines(entries) {
   }
 
   return entries.map((entry) => `- [${entry.type}] ${entry.path} (${entry.nodeId})`);
+}
+
+/**
+ * ============================================================================
+ * Assets Frame Creation
+ * ============================================================================
+ *
+ * Creates the default assets-core frame only when the current page has no
+ * existing frame with a name starting from "assets".
+ */
+
+/**
+ * Создает фрейм assets-core, если на странице еще нет assets* фреймов.
+ */
+function createAssetsCoreFrameIfMissing() {
+  const scan = getCurrentPageScanDiagnostic();
+  if (scan.hasAssetsFrames) {
+    return {
+      created: false,
+      reason: "assets-frame-exists",
+      scan,
+    };
+  }
+
+  const lastFrame = findLastFrameOnCurrentPage();
+  const frame = figma.createFrame();
+  frame.name = ASSETS_CORE_FRAME_NAME;
+  frame.resize(ASSETS_CORE_FRAME_WIDTH, ASSETS_CORE_FRAME_HEIGHT);
+
+  if (lastFrame) {
+    frame.x = lastFrame.x + lastFrame.width + ASSETS_CORE_FRAME_OFFSET_X;
+    frame.y = lastFrame.y;
+  } else {
+    frame.x = 0;
+    frame.y = 0;
+  }
+
+  figma.currentPage.appendChild(frame);
+  figma.currentPage.selection = [frame];
+  figma.viewport.scrollAndZoomIntoView([frame]);
+
+  return {
+    created: true,
+    frameName: frame.name,
+    frameId: frame.id,
+    scan: getCurrentPageScanDiagnostic(),
+  };
+}
+
+/**
+ * Находит последний top-level FRAME на текущей странице по правой границе.
+ */
+function findLastFrameOnCurrentPage() {
+  const frames = figma.currentPage.children.filter((node) => node.type === "FRAME");
+  if (frames.length === 0) return null;
+
+  return frames.reduce((lastFrame, frame) => {
+    const lastRight = lastFrame.x + lastFrame.width;
+    const frameRight = frame.x + frame.width;
+    if (frameRight > lastRight) return frame;
+    if (frameRight === lastRight && frame.y > lastFrame.y) return frame;
+    return lastFrame;
+  }, frames[0]);
 }
 
 /**
@@ -592,12 +681,42 @@ figma.ui.onmessage = async (msg) => {
   }
 
   if (msg.type === "GET_SELECTION_DIAGNOSTIC") {
-    postSelectionDiagnostic();
+    postPageState();
+    return;
+  }
+
+  if (msg.type === "GET_PAGE_STATE") {
+    postPageState();
     return;
   }
 
   if (msg.type === "GET_CURRENT_PAGE_SCAN_DIAGNOSTIC") {
-    postCurrentPageScanDiagnostic();
+    postPageState();
+    return;
+  }
+
+  if (msg.type === "CREATE_ASSETS_FRAME") {
+    try {
+      const result = createAssetsCoreFrameIfMissing();
+      if (result.created) {
+        postUiLog(`Создан фрейм "${result.frameName}" ${ASSETS_CORE_FRAME_WIDTH}x${ASSETS_CORE_FRAME_HEIGHT}`);
+        figma.ui.postMessage({
+          type: "ASSETS_FRAME_CREATED",
+          frameName: result.frameName,
+          frameId: result.frameId,
+        });
+      } else {
+        postUiLog("Фрейм assets* уже существует. Создание assets-core пропущено.", "warn");
+        figma.ui.postMessage({
+          type: "ASSETS_FRAME_ALREADY_EXISTS",
+        });
+      }
+      postPageState();
+    } catch (error) {
+      const message = normalizeErrorMessage(error);
+      postUiLog(`Не удалось создать assets-core: ${message}`, "error");
+      figma.ui.postMessage({ type: "ASSETS_FRAME_CREATE_FAILED", message });
+    }
     return;
   }
 
