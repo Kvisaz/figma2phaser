@@ -4,9 +4,10 @@ const path = require("path");
 const { packAsync } = require("free-tex-packer-core");
 
 const PORT = 3456;
+const SETTINGS_FILE_PATH = path.join(__dirname, "settings.local.json");
 
 /**
- * Поменяй под свой проект.
+ * Значения по умолчанию. Их можно переопределить из UI плагина.
  */
 const GAME_ROOT_DIR = "/Users/sergeytokarev/work_my/YOUR_GAME_PROJECT";
 
@@ -51,6 +52,49 @@ function writeTextFile(filePath, content) {
 function writeBinaryFile(filePath, buffer) {
     ensureDirectoryExists(path.dirname(filePath));
     fs.writeFileSync(filePath, buffer);
+}
+
+function readSettings() {
+    const defaults = {
+        atlasOutputDir: ATLAS_OUTPUT_DIR,
+        tsOutputDir: SCENE_OUTPUT_DIR,
+    };
+
+    try {
+        if (!fs.existsSync(SETTINGS_FILE_PATH)) {
+            return defaults;
+        }
+
+        const parsed = JSON.parse(fs.readFileSync(SETTINGS_FILE_PATH, "utf8"));
+        return normalizeSettings({
+            ...defaults,
+            ...(parsed && typeof parsed === "object" ? parsed : {}),
+        });
+    } catch (error) {
+        return defaults;
+    }
+}
+
+function writeSettings(settings) {
+    const normalized = normalizeSettings({
+        ...readSettings(),
+        ...(settings && typeof settings === "object" ? settings : {}),
+    });
+    writeTextFile(SETTINGS_FILE_PATH, JSON.stringify(normalized, null, 2));
+    return normalized;
+}
+
+function normalizeSettings(settings) {
+    return {
+        atlasOutputDir: normalizeOutputDirectory(settings.atlasOutputDir || ATLAS_OUTPUT_DIR),
+        tsOutputDir: normalizeOutputDirectory(settings.tsOutputDir || SCENE_OUTPUT_DIR),
+    };
+}
+
+function normalizeOutputDirectory(input) {
+    const value = String(input || "").trim();
+    if (!value) return "";
+    return path.resolve(value);
 }
 
 function sanitizePackName(input) {
@@ -181,14 +225,21 @@ function buildTexturePackerImages(files) {
             throw new Error("File entry is missing fileName");
         }
 
-        if (!Array.isArray(file.bytes)) {
-            throw new Error(`File "${file.fileName}" has invalid bytes`);
+        if (typeof file.bytesBase64 === "string" && file.bytesBase64.length > 0) {
+            return {
+                path: file.fileName,
+                contents: Buffer.from(file.bytesBase64, "base64"),
+            };
         }
 
-        return {
-            path: file.fileName,
-            contents: Buffer.from(file.bytes),
-        };
+        if (Array.isArray(file.bytes)) {
+            return {
+                path: file.fileName,
+                contents: Buffer.from(file.bytes),
+            };
+        }
+
+        throw new Error(`File "${file.fileName}" has invalid bytes`);
     });
 }
 
@@ -344,6 +395,11 @@ async function packAtlasWithFreeTexPacker(packName, images) {
 async function handleExportRequest(request, response) {
     const payload = await readJsonBody(request);
     validateExportPayload(payload);
+    const savedSettings = readSettings();
+    const outputSettings = writeSettings({
+        atlasOutputDir: payload.atlasOutputDir || savedSettings.atlasOutputDir,
+        tsOutputDir: payload.tsOutputDir || savedSettings.tsOutputDir,
+    });
 
     const packName = sanitizePackName(
         payload.packName ||
@@ -398,12 +454,12 @@ async function handleExportRequest(request, response) {
     const typesTsText = createTypesTs();
     const utilsTsText = createUtilsTs();
 
-    const atlasPngFilePath = path.join(ATLAS_OUTPUT_DIR, `${packName}.png`);
-    const atlasJsonFilePath = path.join(ATLAS_OUTPUT_DIR, `${packName}.json`);
-    const assetsTsFilePath = path.join(SCENE_OUTPUT_DIR, `${packName}-assets.ts`);
-    const sceneTsFilePath = path.join(SCENE_OUTPUT_DIR, `${packName}-scene.ts`);
-    const typesTsFilePath = path.join(SCENE_OUTPUT_DIR, "types.ts");
-    const utilsTsFilePath = path.join(SCENE_OUTPUT_DIR, "utils.ts");
+    const atlasPngFilePath = path.join(outputSettings.atlasOutputDir, `${packName}.png`);
+    const atlasJsonFilePath = path.join(outputSettings.atlasOutputDir, `${packName}.json`);
+    const assetsTsFilePath = path.join(outputSettings.tsOutputDir, `${packName}-assets.ts`);
+    const sceneTsFilePath = path.join(outputSettings.tsOutputDir, `${packName}-scene.ts`);
+    const typesTsFilePath = path.join(outputSettings.tsOutputDir, "types.ts");
+    const utilsTsFilePath = path.join(outputSettings.tsOutputDir, "utils.ts");
 
     writeBinaryFile(atlasPngFilePath, atlasPngBuffer);
     writeTextFile(atlasJsonFilePath, atlasJsonText);
@@ -416,6 +472,8 @@ async function handleExportRequest(request, response) {
         ok: true,
         message: "Export written to game folder",
         packName,
+        atlasOutputDir: outputSettings.atlasOutputDir,
+        tsOutputDir: outputSettings.tsOutputDir,
         filesWritten: [
             atlasPngFilePath,
             atlasJsonFilePath,
@@ -424,6 +482,30 @@ async function handleExportRequest(request, response) {
             typesTsFilePath,
             utilsTsFilePath,
         ],
+    });
+}
+
+async function handleSettingsRequest(request, response) {
+    if (request.method === "GET") {
+        sendJson(response, 200, {
+            ok: true,
+            settings: readSettings(),
+        });
+        return;
+    }
+
+    if (request.method === "POST") {
+        const payload = await readJsonBody(request);
+        sendJson(response, 200, {
+            ok: true,
+            settings: writeSettings(payload),
+        });
+        return;
+    }
+
+    sendJson(response, 405, {
+        ok: false,
+        error: `Method not allowed: ${request.method}`,
     });
 }
 
@@ -440,13 +522,19 @@ const server = http.createServer(async (request, response) => {
         }
 
         if (request.method === "GET" && request.url === "/health") {
+            const settings = readSettings();
             sendJson(response, 200, {
                 ok: true,
                 port: PORT,
                 gameRootDir: GAME_ROOT_DIR,
-                atlasOutputDir: ATLAS_OUTPUT_DIR,
-                sceneOutputDir: SCENE_OUTPUT_DIR,
+                atlasOutputDir: settings.atlasOutputDir,
+                tsOutputDir: settings.tsOutputDir,
             });
+            return;
+        }
+
+        if ((request.method === "GET" || request.method === "POST") && request.url === "/settings") {
+            await handleSettingsRequest(request, response);
             return;
         }
 
@@ -469,9 +557,10 @@ const server = http.createServer(async (request, response) => {
 });
 
 server.listen(PORT, () => {
+    const settings = readSettings();
     console.log("[figma2phaser] companion server started");
     console.log(`[figma2phaser] http://localhost:${PORT}/health`);
     console.log(`[figma2phaser] GAME_ROOT_DIR=${GAME_ROOT_DIR}`);
-    console.log(`[figma2phaser] ATLAS_OUTPUT_DIR=${ATLAS_OUTPUT_DIR}`);
-    console.log(`[figma2phaser] SCENE_OUTPUT_DIR=${SCENE_OUTPUT_DIR}`);
+    console.log(`[figma2phaser] ATLAS_OUTPUT_DIR=${settings.atlasOutputDir}`);
+    console.log(`[figma2phaser] TS_OUTPUT_DIR=${settings.tsOutputDir}`);
 });

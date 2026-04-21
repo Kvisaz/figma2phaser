@@ -13,7 +13,12 @@
       margin: 0;
       padding: 12px;
       display: grid;
-      gap: 10px;
+      gap: 12px;
+    }
+
+    .section {
+      display: grid;
+      gap: 8px;
     }
 
     .row {
@@ -33,7 +38,7 @@
       border: 1px solid #666;
       border-radius: 8px;
       padding: 6px 8px;
-      min-width: 180px;
+      min-width: 220px;
       background: transparent;
       color: inherit;
     }
@@ -44,11 +49,28 @@
       padding: 8px 12px;
       cursor: pointer;
       background: transparent;
+      color: inherit;
     }
 
     button:disabled {
       opacity: 0.5;
       cursor: not-allowed;
+    }
+
+    .pathBlock {
+      display: grid;
+      gap: 4px;
+      min-width: 0;
+    }
+
+    .pathPreview {
+      max-width: 480px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 11px;
+      line-height: 1.35;
+      opacity: 0.78;
     }
 
     #status {
@@ -58,171 +80,98 @@
       border: 1px solid #666;
       border-radius: 8px;
       padding: 10px;
-      min-height: 140px;
+      min-height: 130px;
       overflow: auto;
     }
   </style>
-  <!--
-    При showUI(__html__) относительные локальные script/src не гарантированно доступны.
-    Поэтому JSZip подключаем абсолютным URL.
-  -->
-  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 </head>
 <body>
-  <div class="row">
-    <label>
-      packName
-      <input id="packNameInput" type="text" placeholder="Например: atlas" />
-    </label>
-    <label>
-      atlasBasePath
-      <input
-        id="atlasBasePathInput"
-        type="text"
-        value="./assets/atlases/"
-        placeholder="./assets/atlases/"
-      />
-    </label>
-  </div>
+  <div class="section">
+    <div class="row">
+      <label>
+        packName
+        <input id="packNameInput" type="text" placeholder="Например: atlas" />
+      </label>
+      <label>
+        atlasBasePath
+        <input id="atlasBasePathInput" type="text" placeholder="./assets/atlases/" />
+      </label>
+    </div>
 
-  <div class="row">
     <label>
       serverUrl
-      <input
-        id="serverUrlInput"
-        type="text"
-        value="http://localhost:3456"
-        placeholder="http://localhost:3456"
-      />
+      <input id="serverUrlInput" type="text" placeholder="http://localhost:3456" />
     </label>
   </div>
 
+  <div class="section">
+    <div class="pathBlock">
+      <button id="chooseAtlasOutputDir" type="button">Задать путь экспорта atlas</button>
+      <div id="atlasOutputDirPreview" class="pathPreview" title="">Путь atlas не задан</div>
+    </div>
+
+    <div class="pathBlock">
+      <button id="chooseTsOutputDir" type="button">Задать путь экспорта TS</button>
+      <div id="tsOutputDirPreview" class="pathPreview" title="">Путь TS не задан</div>
+    </div>
+  </div>
+
   <div class="row">
-    <button id="syncToGame" disabled>Синхронизировать в игру</button>
-    <button id="downloadZip" disabled>Скачать ZIP</button>
-    <button id="retry">Повторить экспорт</button>
+    <button id="syncToGame" disabled>Экспортировать файлы</button>
+    <button id="retry">Повторить экспорт из Figma</button>
     <button id="close">Закрыть</button>
   </div>
 
-  <div id="status">Ожидание данных из Figma…</div>
+  <div id="status">Ожидание данных из Figma...</div>
+
   <script>
-    /**
-     * Текущее состояние экспорта, пришедшее из code.js.
-     */
-    let exportPayload = null;
     const DEFAULT_ATLAS_BASE_PATH = "./assets/atlases/";
     const DEFAULT_SERVER_URL = "http://localhost:3456";
+    const DEFAULT_ATLAS_OUTPUT_DIR = "/Users/sergeytokarev/work_my/YOUR_GAME_PROJECT/public/assets/atlases";
+    const DEFAULT_TS_OUTPUT_DIR = "/Users/sergeytokarev/work_my/YOUR_GAME_PROJECT/src/autogen";
+
+    let exportPayload = null;
+    let settings = {
+      packName: "",
+      atlasBasePath: DEFAULT_ATLAS_BASE_PATH,
+      serverUrl: DEFAULT_SERVER_URL,
+      atlasOutputDir: DEFAULT_ATLAS_OUTPUT_DIR,
+      tsOutputDir: DEFAULT_TS_OUTPUT_DIR,
+    };
 
     const packNameInput = document.getElementById("packNameInput");
     const atlasBasePathInput = document.getElementById("atlasBasePathInput");
     const serverUrlInput = document.getElementById("serverUrlInput");
+    const chooseAtlasOutputDirButton = document.getElementById("chooseAtlasOutputDir");
+    const chooseTsOutputDirButton = document.getElementById("chooseTsOutputDir");
+    const atlasOutputDirPreview = document.getElementById("atlasOutputDirPreview");
+    const tsOutputDirPreview = document.getElementById("tsOutputDirPreview");
     const syncToGameButton = document.getElementById("syncToGame");
-    const downloadZipButton = document.getElementById("downloadZip");
     const retryButton = document.getElementById("retry");
     const closeButton = document.getElementById("close");
     const statusNode = document.getElementById("status");
-    atlasBasePathInput.value = DEFAULT_ATLAS_BASE_PATH;
-    serverUrlInput.value = DEFAULT_SERVER_URL;
-    let currentStatusText = "Ожидание данных из Figma…";
     const statusLogLines = [];
 
-    /**
-     * Настройки встроенного atlas-пэкера.
-     * padding нужен, чтобы спрайты не прилипали друг к другу.
-     */
-    const ATLAS_PACKER_OPTIONS = Object.freeze({
-      algorithm: "maxrects",
-      padding: 2,
-      minAtlasSize: 8,
-      maxAtlasSize: 8192,
-      powerOfTwo: false,
-      allowTrim: true,
-      alphaThreshold: 0,
-      allowRotation: false,
-      heuristics: [
-        "bestShortSideFit",
-        "bestLongSideFit",
-        "bestAreaFit",
-        "bottomLeft",
-        "contactPoint",
-      ],
-    });
-
-    /**
-     * Безопасно отправляет сообщение в основной поток плагина.
-     */
     function postToPlugin(message) {
       parent.postMessage({ pluginMessage: message }, "*");
     }
 
-    /**
-     * Пишет текст статуса в UI.
-     */
     function setStatus(text) {
-      currentStatusText = String(text || "");
-      renderStatus();
+      statusNode.textContent = String(text || "");
+      if (statusLogLines.length > 0) {
+        statusNode.textContent += `\n\nЛог:\n${statusLogLines.join("\n")}`;
+      }
+      statusNode.scrollTop = statusNode.scrollHeight;
     }
 
-    /**
-     * Добавляет строку в блок "Лог" внизу статуса.
-     */
     function appendLog(text) {
       const value = String(text || "").trim();
       if (!value) return;
       statusLogLines.push(value);
-      if (statusLogLines.length > 120) {
-        statusLogLines.shift();
-      }
-      renderStatus();
+      if (statusLogLines.length > 80) statusLogLines.shift();
+      setStatus(statusNode.textContent.split("\n\nЛог:\n")[0] || "");
     }
 
-    /**
-     * Рендерит основной статус и накопленный лог.
-     */
-    function renderStatus() {
-      const base = currentStatusText || "";
-      const logText = statusLogLines.length > 0
-        ? `\n\nЛог:\n${statusLogLines.join("\n")}`
-        : "";
-      statusNode.textContent = `${base}${logText}`;
-      statusNode.scrollTop = statusNode.scrollHeight;
-    }
-
-    /**
-     * Достает предупреждения по исходным именам из manifest.
-     */
-    function getUnsafeNameWarningsFromPayload(payload) {
-      if (!payload || !payload.manifest || !payload.manifest.warnings) return [];
-      const warnings = payload.manifest.warnings.unsafeNames;
-      return Array.isArray(warnings) ? warnings : [];
-    }
-
-    /**
-     * Формирует читаемый список небезопасных имен для статуса UI.
-     */
-    function formatUnsafeNameWarningsForStatus(warnings) {
-      return warnings.map((warning) => {
-        const invalidCharacters = Array.isArray(warning.invalidCharacters)
-          ? warning.invalidCharacters.map((char) => JSON.stringify(char)).join(", ")
-          : "";
-        const suffix = invalidCharacters ? ` (${invalidCharacters})` : "";
-        return `- ${warning.role}: "${warning.name}" -> "${warning.safeName}"${suffix}`;
-      }).join("\n");
-    }
-
-    /**
-     * Диагностика состояния подключения JSZip.
-     */
-    function describeJsZipState() {
-      const scriptSources = Array.from(document.scripts || [])
-        .map((item) => item.getAttribute("src") || "<inline>")
-        .join(", ");
-      return `window.JSZip=${typeof window.JSZip}; globalThis.JSZip=${typeof globalThis.JSZip}; scripts=[${scriptSources}]`;
-    }
-
-    /**
-     * Преобразует имя в безопасный slug для packName и файлов.
-     */
     function slugify(input) {
       const value = String(input || "")
         .normalize("NFKD")
@@ -234,1394 +183,138 @@
       return value || "pack";
     }
 
-    /**
-     * Нормализует базовый путь atlas для генерации preload-конфига.
-     * По требованию это должен быть относительный путь загрузки.
-     */
+    function normalizeServerUrl(input) {
+      return String(input || "").trim().replace(/\/+$/g, "") || DEFAULT_SERVER_URL;
+    }
+
     function normalizeAtlasBasePath(input) {
       const raw = String(input || "").trim();
       let next = (raw || DEFAULT_ATLAS_BASE_PATH).replace(/\\/g, "/");
 
       if (!next.startsWith("./") && !next.startsWith("../")) {
-        if (next.startsWith("/")) {
-          next = `.${next}`;
-        } else {
-          next = `./${next}`;
-        }
+        next = next.startsWith("/") ? `.${next}` : `./${next}`;
       }
 
-      if (!next.endsWith("/")) {
-        next += "/";
-      }
-
+      if (!next.endsWith("/")) next += "/";
       return next;
     }
 
-    /**
-     * Собирает полный путь к atlas-файлу от базового пути и имени файла.
-     */
-    function buildAtlasFilePath(basePath, fileName) {
-      const cleanFileName = String(fileName || "").replace(/^\/+/, "");
-      return `${normalizeAtlasBasePath(basePath)}${cleanFileName}`;
+    function normalizeDirectoryPath(input) {
+      return String(input || "").trim().replace(/\/+$/g, "");
     }
 
-    /**
-     * camelCase для генерации имен переменных.
-     */
-    function toCamelCase(input) {
-      const safe = slugify(input);
-      const tokens = safe
-        .split(/[^a-zA-Z0-9]+/)
-        .filter(Boolean)
-        .map((token) => token.toLowerCase());
-
-      if (tokens.length === 0) return "asset";
-      const [first, ...rest] = tokens;
-      const camel = first + rest.map((token) => token.charAt(0).toUpperCase() + token.slice(1)).join("");
-      if (/^[0-9]/.test(camel)) return `n${camel}`;
-      return camel;
+    function updatePathPreview(node, pathValue, emptyText) {
+      const value = normalizeDirectoryPath(pathValue);
+      node.textContent = value || emptyText;
+      node.title = value || "";
     }
 
-    /**
-     * PascalCase для имен классов сцены.
-     */
-    function toPascalCase(input) {
-      const camel = toCamelCase(input);
-      return camel.charAt(0).toUpperCase() + camel.slice(1);
+    function renderSettings() {
+      packNameInput.value = settings.packName || "";
+      atlasBasePathInput.value = settings.atlasBasePath || DEFAULT_ATLAS_BASE_PATH;
+      serverUrlInput.value = settings.serverUrl || DEFAULT_SERVER_URL;
+      updatePathPreview(atlasOutputDirPreview, settings.atlasOutputDir, "Путь atlas не задан");
+      updatePathPreview(tsOutputDirPreview, settings.tsOutputDir, "Путь TS не задан");
     }
 
-    /**
-     * Вычисляет padding nine-slice из имени узла/фрейма.
-     * Формат: ...nine.20
-     */
-    function detectNinePadding(rawName) {
-      const match = String(rawName || "").trim().match(/(?:^|[._-])nine\.(\d+)$/i);
-      if (!match) return null;
-      const parsed = Number(match[1]);
-      if (!Number.isFinite(parsed)) return null;
-      return parsed;
+    function collectSettingsFromUi() {
+      settings = {
+        ...settings,
+        packName: slugify(packNameInput.value || settings.packName || (exportPayload && exportPayload.packName) || "pack"),
+        atlasBasePath: normalizeAtlasBasePath(atlasBasePathInput.value),
+        serverUrl: normalizeServerUrl(serverUrlInput.value),
+        atlasOutputDir: normalizeDirectoryPath(settings.atlasOutputDir),
+        tsOutputDir: normalizeDirectoryPath(settings.tsOutputDir),
+      };
+      renderSettings();
+      return settings;
     }
 
-    /**
-     * Скачивает Blob как файл.
-     */
-    function downloadBlob(blob, fileName) {
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = fileName;
-      a.click();
-      URL.revokeObjectURL(url);
+    function savePluginSettings() {
+      postToPlugin({
+        type: "SAVE_SETTINGS",
+        settings: collectSettingsFromUi(),
+      });
     }
 
-    /**
-     * Преобразует Uint8Array PNG в объект изображения для Canvas.
-     */
-    async function bytesToDrawableImage(bytes) {
-      const blob = new Blob([bytes], { type: "image/png" });
-
-      if (typeof createImageBitmap === "function") {
-        const bitmap = await createImageBitmap(blob);
-        return {
-          width: bitmap.width,
-          height: bitmap.height,
-          drawable: bitmap,
-          dispose: () => {
-            if (typeof bitmap.close === "function") bitmap.close();
-          },
-        };
+    async function fetchServerSettings() {
+      const serverUrl = normalizeServerUrl(serverUrlInput.value || settings.serverUrl);
+      const response = await fetch(`${serverUrl}/settings`);
+      const payload = await response.json();
+      if (!response.ok || !payload || payload.ok === false) {
+        throw new Error(payload && payload.error ? payload.error : `HTTP ${response.status}`);
       }
 
-      // Фоллбек для сред без createImageBitmap.
-      const image = await new Promise((resolve, reject) => {
-        const img = new Image();
-        img.onload = () => resolve(img);
-        img.onerror = () => reject(new Error("Failed to decode PNG"));
-        img.src = URL.createObjectURL(blob);
-      });
-
-      return {
-        width: image.width,
-        height: image.height,
-        drawable: image,
-        dispose: () => {
-          if (image.src && image.src.startsWith("blob:")) {
-            URL.revokeObjectURL(image.src);
-          }
-        },
+      settings = {
+        ...settings,
+        ...payload.settings,
+        serverUrl,
       };
+      renderSettings();
+      savePluginSettings();
     }
 
-    /**
-     * Переводит число в следующую степень двойки.
-     * Это совместимо с типичными ожиданиями atlas-текстур.
-     */
-    function nextPow2(value) {
-      let result = 1;
-      const safe = Math.max(1, Math.ceil(value));
-      while (result < safe) result *= 2;
-      return result;
-    }
-
-    /**
-     * Оценивает разумную ширину atlas по суммарной площади изображений.
-     */
-    function estimateAtlasWidth(images, padding) {
-      const area = images.reduce((sum, item) => sum + item.width * item.height, 0);
-      const widest = images.reduce((max, item) => Math.max(max, item.width), 1);
-      const target = Math.sqrt(area);
-      const guessed = Math.max(target * 1.4, widest + padding * 2);
-      return nextPow2(guessed);
-    }
-
-    /**
-     * Простой shelf-пэкер: раскладывает изображения по строкам слева направо.
-     *
-     * Плюсы:
-     * - очень простой и надежный;
-     * - предсказуемый результат.
-     *
-     * Минусы:
-     * - не самый плотный packing.
-     */
-    function packImagesShelf(images, options) {
-      const padding = options.padding;
-      const minAtlasSize = options.minAtlasSize;
-
-      // Сортировка по высоте обычно дает более компактный результат для shelf-алгоритма.
-      const sorted = [...images].sort((a, b) => b.height - a.height);
-
-      let maxRowWidth = estimateAtlasWidth(sorted, padding);
-      const requiredMinWidth = sorted.reduce((max, item) => Math.max(max, item.width + padding * 2), 1);
-      maxRowWidth = Math.max(maxRowWidth, nextPow2(requiredMinWidth));
-
-      let x = padding;
-      let y = padding;
-      let rowHeight = 0;
-      let usedMaxX = minAtlasSize;
-      let usedMaxY = minAtlasSize;
-
-      const placements = [];
-
-      sorted.forEach((item) => {
-        // Если элемент не влезает в текущую строку, переходим на новую.
-        if (x + item.width + padding > maxRowWidth && rowHeight > 0) {
-          x = padding;
-          y += rowHeight + padding;
-          rowHeight = 0;
-        }
-
-        placements.push({
-          ...item,
-          atlasX: x,
-          atlasY: y,
-          frameWidth: item.width,
-          frameHeight: item.height,
-          packedWidth: item.width + padding,
-          packedHeight: item.height + padding,
-          rotated: false,
-        });
-
-        x += item.width + padding;
-        rowHeight = Math.max(rowHeight, item.height);
-        usedMaxX = Math.max(usedMaxX, x);
-        usedMaxY = Math.max(usedMaxY, y + rowHeight + padding);
+    async function saveServerSettings() {
+      const nextSettings = collectSettingsFromUi();
+      const response = await fetch(`${nextSettings.serverUrl}/settings`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          atlasOutputDir: nextSettings.atlasOutputDir,
+          tsOutputDir: nextSettings.tsOutputDir,
+        }),
       });
-
-      const atlasWidth = nextPow2(Math.max(minAtlasSize, usedMaxX));
-      const atlasHeight = nextPow2(Math.max(minAtlasSize, usedMaxY));
-
-      return {
-        atlasWidth,
-        atlasHeight,
-        algorithm: "shelf",
-        placements,
-      };
+      const payload = await response.json();
+      if (!response.ok || !payload || payload.ok === false) {
+        throw new Error(payload && payload.error ? payload.error : `HTTP ${response.status}`);
+      }
+      settings = { ...settings, ...payload.settings };
+      renderSettings();
     }
 
-    /**
-     * Выбирает алгоритм упаковки и оставляет shelf как fallback.
-     */
-    function packImagesForAtlas(images, options) {
-      const algorithm = String(options.algorithm || "maxrects").toLowerCase();
+    function promptForDirectory(kind) {
+      const isAtlas = kind === "atlas";
+      const current = isAtlas ? settings.atlasOutputDir : settings.tsOutputDir;
+      const label = isAtlas ? "atlas PNG/JSON" : "TypeScript";
+      const value = window.prompt(`Укажи абсолютный путь для экспорта ${label}:`, current || "");
+      if (value === null) return;
 
-      if (algorithm === "maxrects") {
-        try {
-          return packImagesMaxRects(images, options);
-        } catch (error) {
-          const fallback = packImagesShelf(images, options);
+      const normalized = normalizeDirectoryPath(value);
+      if (!normalized) {
+        setStatus(`Путь экспорта ${label} не изменен: пустое значение.`);
+        return;
+      }
+
+      if (isAtlas) {
+        settings.atlasOutputDir = normalized;
+      } else {
+        settings.tsOutputDir = normalized;
+      }
+
+      renderSettings();
+      savePluginSettings();
+      saveServerSettings()
+        .then(() => setStatus(`Путь экспорта ${label} сохранен.\n${normalized}`))
+        .catch((error) => {
           const message = error instanceof Error ? error.message : String(error);
-          return {
-            ...fallback,
-            fallbackReason: message,
-          };
-        }
-      }
-
-      return packImagesShelf(images, options);
-    }
-
-    /**
-     * MaxRects-пэкер: перебирает размеры atlas и эвристики, затем выбирает лучший результат.
-     */
-    function packImagesMaxRects(images, options) {
-      const minAtlasSize = options.minAtlasSize;
-      if (images.length === 0) {
-        return {
-          atlasWidth: minAtlasSize,
-          atlasHeight: minAtlasSize,
-          algorithm: "maxrects",
-          heuristic: "none",
-          placements: [],
-        };
-      }
-
-      const sortedImages = sortImagesForPacking(images);
-      const candidates = generateAtlasSizeCandidates(sortedImages, options);
-      const heuristics = getMaxRectsHeuristics(options);
-      let bestResult = null;
-
-      candidates.forEach((candidate) => {
-        heuristics.forEach((heuristic) => {
-          const packResult = tryPackImagesIntoSize(
-            sortedImages,
-            candidate.width,
-            candidate.height,
-            options,
-            heuristic,
-          );
-
-          if (!packResult) return;
-
-          const normalizedResult = shrinkPackResultToUsedBounds({
-            ...packResult,
-            algorithm: "maxrects",
-            heuristic,
-          }, options);
-
-          if (!bestResult || isBetterPackResult(normalizedResult, bestResult)) {
-            bestResult = normalizedResult;
-          }
+          setStatus(`Путь сохранен в Figma, но server settings не обновлены:\n${message}`);
         });
-      });
-
-      if (bestResult) return bestResult;
-
-      throw new Error(`MaxRects не смог упаковать ${images.length} PNG до ${options.maxAtlasSize}x${options.maxAtlasSize}`);
     }
 
-    /**
-     * Возвращает список эвристик MaxRects, с которыми стоит попробовать packing.
-     */
-    function getMaxRectsHeuristics(options) {
-      if (Array.isArray(options.heuristics) && options.heuristics.length > 0) {
-        return options.heuristics;
-      }
-
-      return ["bestShortSideFit"];
+    function getUnsafeNameWarningsFromPayload(payload) {
+      if (!payload || !payload.manifest || !payload.manifest.warnings) return [];
+      const warnings = payload.manifest.warnings.unsafeNames;
+      return Array.isArray(warnings) ? warnings : [];
     }
 
-    /**
-     * Сначала кладем крупные и сложные прямоугольники, чтобы они не остались без места.
-     */
-    function sortImagesForPacking(images) {
-      return [...images].sort((a, b) => {
-        const aLongSide = Math.max(a.width, a.height);
-        const bLongSide = Math.max(b.width, b.height);
-        const aArea = a.width * a.height;
-        const bArea = b.width * b.height;
-
-        if (aLongSide !== bLongSide) return bLongSide - aLongSide;
-        if (aArea !== bArea) return bArea - aArea;
-        if (a.height !== b.height) return b.height - a.height;
-        return String(a.fileName).localeCompare(String(b.fileName));
-      });
-    }
-
-    /**
-     * Генерирует размеры atlas. Площадь важнее квадратности, квадратность только tie-breaker.
-     */
-    function generateAtlasSizeCandidates(images, options) {
-      const padding = options.padding;
-      const minAtlasSize = options.minAtlasSize;
-      const maxAtlasSize = options.maxAtlasSize;
-      const widest = images.reduce((max, item) => {
-        const requiredWidth = options.allowRotation
-          ? Math.min(item.width, item.height) + padding * 2
-          : item.width + padding * 2;
-        return Math.max(max, requiredWidth);
-      }, minAtlasSize);
-      const tallest = images.reduce((max, item) => {
-        const requiredHeight = options.allowRotation
-          ? Math.min(item.width, item.height) + padding * 2
-          : item.height + padding * 2;
-        return Math.max(max, requiredHeight);
-      }, minAtlasSize);
-      const minWidth = nextPow2(Math.max(minAtlasSize, widest));
-      const minHeight = nextPow2(Math.max(minAtlasSize, tallest));
-      const requiredArea = images.reduce((sum, item) => {
-        return sum + (item.width + padding) * (item.height + padding);
-      }, 0);
-      const candidates = [];
-
-      for (let width = minWidth; width <= maxAtlasSize; width = getNextAtlasCandidateSize(width, options)) {
-        for (let height = minHeight; height <= maxAtlasSize; height = getNextAtlasCandidateSize(height, options)) {
-          if (width * height < requiredArea) continue;
-          candidates.push({ width, height });
-        }
-      }
-
-      candidates.sort((a, b) => {
-        const aArea = a.width * a.height;
-        const bArea = b.width * b.height;
-        const aMaxSide = Math.max(a.width, a.height);
-        const bMaxSide = Math.max(b.width, b.height);
-        const aAspectDelta = Math.abs(a.width - a.height);
-        const bAspectDelta = Math.abs(b.width - b.height);
-
-        if (aArea !== bArea) return aArea - bArea;
-        if (aAspectDelta !== bAspectDelta) return aAspectDelta - bAspectDelta;
-        if (aMaxSide !== bMaxSide) return aMaxSide - bMaxSide;
-        return a.height - b.height;
-      });
-
-      return candidates;
-    }
-
-    /**
-     * Возвращает следующий допустимый размер atlas.
-     *
-     * Для non-POT atlas нельзя идти с мелким шагом до maxAtlasSize:
-     * это превращает packing в десятки тысяч попыток width/height/heuristic.
-     * Адаптивный шаг оставляет плотный поиск на малых размерах и быстро
-     * разрежает кандидаты на больших atlas.
-     *
-     * Если снова нужно ускорять:
-     * - увеличивать пороги шагов ниже;
-     * - уменьшать maxAtlasSize;
-     * - сокращать список ATLAS_PACKER_OPTIONS.heuristics.
-     */
-    function getNextAtlasCandidateSize(value, options) {
-      if (options.powerOfTwo !== false) return value * 2;
-      if (value < 512) return value + 64;
-      if (value < 1024) return value + 128;
-      if (value < 2048) return value + 256;
-      if (value < 4096) return value + 512;
-      return value + 1024;
-    }
-
-    /**
-     * Пытается упаковать весь набор в конкретный размер atlas и одной эвристикой.
-     */
-    function tryPackImagesIntoSize(images, atlasWidth, atlasHeight, options, heuristic) {
-      const padding = options.padding;
-      let freeRects = [createInitialFreeRect(atlasWidth, atlasHeight, padding)];
-      const placements = [];
-
-      for (let index = 0; index < images.length; index += 1) {
-        const image = images[index];
-        const placement = findBestMaxRectsPlacement(
-          freeRects,
-          placements,
-          image,
-          options,
-          heuristic,
-          atlasWidth,
-          atlasHeight,
-        );
-
-        if (!placement) {
-          return null;
-        }
-
-        placements.push(createPlacedImage(image, placement));
-        freeRects = splitFreeRects(freeRects, createUsedRectFromPlacement(placement));
-        freeRects = pruneContainedFreeRects(freeRects);
-      }
-
-      return {
-        atlasWidth,
-        atlasHeight,
-        placements,
-      };
-    }
-
-    /**
-     * Оставляет внешний padding по левому и верхнему краю atlas.
-     */
-    function createInitialFreeRect(atlasWidth, atlasHeight, padding) {
-      return {
-        x: padding,
-        y: padding,
-        width: Math.max(0, atlasWidth - padding),
-        height: Math.max(0, atlasHeight - padding),
-      };
-    }
-
-    /**
-     * Ищет лучшее место для одного изображения по выбранной эвристике.
-     */
-    function findBestMaxRectsPlacement(freeRects, placements, image, options, heuristic, atlasWidth, atlasHeight) {
-      const padding = options.padding;
-      const variants = createPackingVariants(image, padding, options.allowRotation);
-      let best = null;
-
-      freeRects.forEach((freeRect) => {
-        variants.forEach((variant) => {
-          if (variant.packedWidth > freeRect.width || variant.packedHeight > freeRect.height) return;
-
-          const candidate = {
-            ...variant,
-            x: freeRect.x,
-            y: freeRect.y,
-          };
-
-          candidate.score = scoreMaxRectsCandidate(
-            heuristic,
-            candidate,
-            freeRect,
-            placements,
-            atlasWidth,
-            atlasHeight,
-            padding,
-          );
-
-          if (!best || isBetterMaxRectsPlacement(candidate, best)) {
-            best = candidate;
-          }
-        });
-      });
-
-      return best;
-    }
-
-    /**
-     * Возвращает normal/rotated варианты одного изображения.
-     */
-    function createPackingVariants(image, padding, allowRotation) {
-      const variants = [
-        {
-          rotated: false,
-          frameWidth: image.width,
-          frameHeight: image.height,
-          packedWidth: image.width + padding,
-          packedHeight: image.height + padding,
-        },
-      ];
-
-      if (allowRotation && image.width !== image.height) {
-        variants.push({
-          rotated: true,
-          frameWidth: image.height,
-          frameHeight: image.width,
-          packedWidth: image.height + padding,
-          packedHeight: image.width + padding,
-        });
-      }
-
-      return variants;
-    }
-
-    /**
-     * Считает score кандидата для конкретной эвристики MaxRects.
-     */
-    function scoreMaxRectsCandidate(heuristic, candidate, freeRect, placements, atlasWidth, atlasHeight, padding) {
-      const leftoverWidth = freeRect.width - candidate.packedWidth;
-      const leftoverHeight = freeRect.height - candidate.packedHeight;
-      const shortSideFit = Math.min(leftoverWidth, leftoverHeight);
-      const longSideFit = Math.max(leftoverWidth, leftoverHeight);
-      const areaFit = freeRect.width * freeRect.height - candidate.packedWidth * candidate.packedHeight;
-      const bottom = candidate.y + candidate.packedHeight;
-      const contactScore = calculateContactPointScore(
-        createUsedRectFromPlacement(candidate),
-        placements,
-        atlasWidth,
-        atlasHeight,
-        padding,
-      );
-
-      if (heuristic === "bestLongSideFit") {
-        return [longSideFit, shortSideFit, areaFit, candidate.y, candidate.x];
-      }
-
-      if (heuristic === "bestAreaFit") {
-        return [areaFit, shortSideFit, longSideFit, candidate.y, candidate.x];
-      }
-
-      if (heuristic === "bottomLeft") {
-        return [bottom, candidate.x, shortSideFit, areaFit];
-      }
-
-      if (heuristic === "contactPoint") {
-        return [-contactScore, bottom, candidate.x, areaFit];
-      }
-
-      return [shortSideFit, longSideFit, areaFit, candidate.y, candidate.x];
-    }
-
-    /**
-     * Сравнивает кандидатов MaxRects детерминированно.
-     */
-    function isBetterMaxRectsPlacement(candidate, best) {
-      const scoreComparison = compareNumberArrays(candidate.score, best.score);
-      if (scoreComparison !== 0) return scoreComparison < 0;
-      if (candidate.rotated !== best.rotated) return !candidate.rotated;
-      if (candidate.y !== best.y) return candidate.y < best.y;
-      return candidate.x < best.x;
-    }
-
-    /**
-     * Переносит поля изображения в placement, сохраняя контракт atlas-пайплайна.
-     */
-    function createPlacedImage(image, placement) {
-      return {
-        ...image,
-        atlasX: placement.x,
-        atlasY: placement.y,
-        frameWidth: placement.frameWidth,
-        frameHeight: placement.frameHeight,
-        packedWidth: placement.packedWidth,
-        packedHeight: placement.packedHeight,
-        rotated: placement.rotated,
-      };
-    }
-
-    /**
-     * Создает занятый прямоугольник с учетом padding.
-     */
-    function createUsedRectFromPlacement(placement) {
-      return {
-        x: placement.x,
-        y: placement.y,
-        width: placement.packedWidth,
-        height: placement.packedHeight,
-      };
-    }
-
-    /**
-     * Contact Point эвристика: чем больше общая граница с соседями/краями, тем плотнее.
-     */
-    function calculateContactPointScore(rect, placements, atlasWidth, atlasHeight, padding) {
-      let score = 0;
-
-      if (rect.x <= padding) score += rect.height;
-      if (rect.y <= padding) score += rect.width;
-      if (rect.x + rect.width >= atlasWidth) score += rect.height;
-      if (rect.y + rect.height >= atlasHeight) score += rect.width;
-
-      placements.forEach((placement) => {
-        const other = createUsedRectFromPlacement(placement);
-
-        if (rect.x === other.x + other.width || rect.x + rect.width === other.x) {
-          score += calculateCommonIntervalLength(rect.y, rect.y + rect.height, other.y, other.y + other.height);
-        }
-
-        if (rect.y === other.y + other.height || rect.y + rect.height === other.y) {
-          score += calculateCommonIntervalLength(rect.x, rect.x + rect.width, other.x, other.x + other.width);
-        }
-      });
-
-      return score;
-    }
-
-    /**
-     * Длина пересечения двух одномерных интервалов.
-     */
-    function calculateCommonIntervalLength(aStart, aEnd, bStart, bEnd) {
-      return Math.max(0, Math.min(aEnd, bEnd) - Math.max(aStart, bStart));
-    }
-
-    /**
-     * Разрезает free rect вокруг занятого прямоугольника.
-     */
-    function splitFreeRects(freeRects, usedRect) {
-      const nextRects = [];
-
-      freeRects.forEach((freeRect) => {
-        if (!rectsIntersect(freeRect, usedRect)) {
-          nextRects.push(freeRect);
-          return;
-        }
-
-        pushFreeRect(nextRects, createFreeRect(
-          freeRect.x,
-          freeRect.y,
-          usedRect.x - freeRect.x,
-          freeRect.height,
-        ));
-
-        pushFreeRect(nextRects, createFreeRect(
-          usedRect.x + usedRect.width,
-          freeRect.y,
-          freeRect.x + freeRect.width - (usedRect.x + usedRect.width),
-          freeRect.height,
-        ));
-
-        pushFreeRect(nextRects, createFreeRect(
-          freeRect.x,
-          freeRect.y,
-          freeRect.width,
-          usedRect.y - freeRect.y,
-        ));
-
-        pushFreeRect(nextRects, createFreeRect(
-          freeRect.x,
-          usedRect.y + usedRect.height,
-          freeRect.width,
-          freeRect.y + freeRect.height - (usedRect.y + usedRect.height),
-        ));
-      });
-
-      return nextRects;
-    }
-
-    /**
-     * Удаляет free rect, если он полностью содержится в другом free rect.
-     */
-    function pruneContainedFreeRects(freeRects) {
-      return freeRects.filter((rect, index) => {
-        for (let otherIndex = 0; otherIndex < freeRects.length; otherIndex += 1) {
-          if (index === otherIndex) continue;
-          const other = freeRects[otherIndex];
-
-          if (isContainedInRect(rect, other)) {
-            if (!areRectsEqual(rect, other) || index > otherIndex) {
-              return false;
-            }
-          }
-        }
-
-        return true;
-      });
-    }
-
-    /**
-     * Создает free rect только если у него положительные размеры.
-     */
-    function createFreeRect(x, y, width, height) {
-      if (width <= 0 || height <= 0) return null;
-      return { x, y, width, height };
-    }
-
-    /**
-     * Добавляет free rect в список, пропуская null.
-     */
-    function pushFreeRect(target, rect) {
-      if (rect) target.push(rect);
-    }
-
-    /**
-     * Проверяет пересечение прямоугольников.
-     */
-    function rectsIntersect(a, b) {
-      return (
-        a.x < b.x + b.width &&
-        a.x + a.width > b.x &&
-        a.y < b.y + b.height &&
-        a.y + a.height > b.y
-      );
-    }
-
-    /**
-     * Проверяет, что один прямоугольник полностью находится внутри другого.
-     */
-    function isContainedInRect(inner, outer) {
-      return (
-        inner.x >= outer.x &&
-        inner.y >= outer.y &&
-        inner.x + inner.width <= outer.x + outer.width &&
-        inner.y + inner.height <= outer.y + outer.height
-      );
-    }
-
-    /**
-     * Нужна для детерминированного удаления дублей free rect.
-     */
-    function areRectsEqual(a, b) {
-      return (
-        a.x === b.x &&
-        a.y === b.y &&
-        a.width === b.width &&
-        a.height === b.height
-      );
-    }
-
-    /**
-     * Ужимает atlas до реально занятой области, сохраняя выбранную сетку размеров.
-     */
-    function shrinkPackResultToUsedBounds(packResult, options) {
-      const usedBounds = calculateUsedAtlasBounds(packResult.placements, options.padding);
-      const atlasWidth = Math.min(
-        packResult.atlasWidth,
-        normalizeAtlasSize(usedBounds.width, options),
-      );
-      const atlasHeight = Math.min(
-        packResult.atlasHeight,
-        normalizeAtlasSize(usedBounds.height, options),
-      );
-
-      return {
-        ...packResult,
-        atlasWidth,
-        atlasHeight,
-      };
-    }
-
-    /**
-     * Считает реально занятую область placements с учетом padding справа/снизу.
-     */
-    function calculateUsedAtlasBounds(placements, padding) {
-      const used = placements.reduce((acc, placement) => {
-        return {
-          width: Math.max(acc.width, placement.atlasX + placement.frameWidth + padding),
-          height: Math.max(acc.height, placement.atlasY + placement.frameHeight + padding),
-        };
-      }, { width: 1, height: 1 });
-
-      return used;
-    }
-
-    /**
-     * Приводит размер atlas к допустимому значению.
-     */
-    function normalizeAtlasSize(value, options) {
-      const safe = Math.max(options.minAtlasSize, Math.ceil(value));
-      if (options.powerOfTwo !== false) return nextPow2(safe);
-      return safe;
-    }
-
-    /**
-     * Выбирает лучший pack result: площадь важнее, квадратность — только tie-breaker.
-     */
-    function isBetterPackResult(candidate, best) {
-      const candidateScore = createPackResultScore(candidate);
-      const bestScore = createPackResultScore(best);
-      return compareNumberArrays(candidateScore, bestScore) < 0;
-    }
-
-    /**
-     * Score результата packing: минимум площади, максимум заполненности, разумная квадратность.
-     */
-    function createPackResultScore(packResult) {
-      const usage = calculateAtlasUsage(packResult);
-      const area = packResult.atlasWidth * packResult.atlasHeight;
-      const aspectPenalty = Math.abs(Math.log(packResult.atlasWidth / packResult.atlasHeight));
-      const rotatedCount = packResult.placements.filter((placement) => placement.rotated).length;
-      const occupiedBounds = calculateUsedAtlasBounds(packResult.placements, 0);
-      const occupiedArea = occupiedBounds.width * occupiedBounds.height;
-
-      return [
-        area,
-        -usage.ratio,
-        aspectPenalty,
-        occupiedArea,
-        rotatedCount,
-      ];
-    }
-
-    /**
-     * Лексикографическое сравнение числовых score-массивов.
-     */
-    function compareNumberArrays(a, b) {
-      const length = Math.max(a.length, b.length);
-
-      for (let index = 0; index < length; index += 1) {
-        const aValue = Number.isFinite(a[index]) ? a[index] : 0;
-        const bValue = Number.isFinite(b[index]) ? b[index] : 0;
-        if (aValue !== bValue) return aValue - bValue;
-      }
-
-      return 0;
-    }
-
-    /**
-     * Считает заполненность atlas реальными frame pixels без учета padding.
-     */
-    function calculateAtlasUsage(packResult) {
-      const atlasArea = packResult.atlasWidth * packResult.atlasHeight;
-      const frameArea = packResult.placements.reduce((sum, placement) => {
-        return sum + placement.frameWidth * placement.frameHeight;
-      }, 0);
-
-      return {
-        frameArea,
-        atlasArea,
-        ratio: atlasArea > 0 ? frameArea / atlasArea : 0,
-      };
-    }
-
-    /**
-     * Считает, сколько площади убрал alpha-trim перед packing.
-     */
-    function calculateTrimStats(images) {
-      const sourceArea = images.reduce((sum, image) => {
-        return sum + image.sourceWidth * image.sourceHeight;
-      }, 0);
-      const trimmedArea = images.reduce((sum, image) => {
-        return sum + image.width * image.height;
-      }, 0);
-      const trimmedCount = images.filter((image) => image.trimmed).length;
-
-      return {
-        sourceArea,
-        trimmedArea,
-        trimmedCount,
-        savedRatio: sourceArea > 0 ? 1 - trimmedArea / sourceArea : 0,
-      };
-    }
-
-    /**
-     * Считает количество повернутых кадров в готовом atlas.
-     */
-    function countRotatedPlacements(packResult) {
-      return packResult.placements.filter((placement) => placement.rotated).length;
-    }
-
-    /**
-     * Форматирует заполненность atlas для UI.
-     */
-    function formatAtlasUsagePercent(usage) {
-      return `${(usage.ratio * 100).toFixed(1)}%`;
-    }
-
-    /**
-     * Форматирует процент с одним знаком после точки.
-     */
-    function formatPercent(value) {
-      return `${(value * 100).toFixed(1)}%`;
-    }
-
-    /**
-     * Форматирует длительность генерации для UI-лога.
-     * Таймер нужен для быстрой проверки, не раздулся ли перебор atlas-кандидатов.
-     */
-    function formatDuration(milliseconds) {
-      const totalSeconds = Math.max(0, Math.round(milliseconds / 1000));
-      const minutes = Math.floor(totalSeconds / 60);
-      const seconds = totalSeconds % 60;
-
-      if (minutes <= 0) {
-        return `${seconds} секунд`;
-      }
-
-      return `${minutes} минут ${seconds} секунд`;
-    }
-
-    /**
-     * Рисует готовый atlas в canvas и возвращает PNG bytes.
-     */
-    async function renderAtlasPng(packResult) {
-      const canvas = document.createElement("canvas");
-      canvas.width = packResult.atlasWidth;
-      canvas.height = packResult.atlasHeight;
-
-      const ctx = canvas.getContext("2d");
-      if (!ctx) {
-        throw new Error("Canvas 2D context is not available");
-      }
-
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-      packResult.placements.forEach((placement) => {
-        drawPlacementToAtlas(ctx, placement);
-      });
-
-      const blob = await new Promise((resolve) => {
-        canvas.toBlob((resultBlob) => resolve(resultBlob), "image/png");
-      });
-
-      if (!blob) {
-        throw new Error("Failed to create atlas PNG blob");
-      }
-
-      const buffer = await blob.arrayBuffer();
-      return new Uint8Array(buffer);
-    }
-
-    /**
-     * Рисует один frame в atlas, учитывая 90-degree rotation.
-     */
-    function drawPlacementToAtlas(ctx, placement) {
-      if (!placement.rotated) {
-        ctx.drawImage(placement.drawable, placement.atlasX, placement.atlasY);
-        return;
-      }
-
-      ctx.save();
-      ctx.translate(placement.atlasX + placement.frameWidth, placement.atlasY);
-      ctx.rotate(Math.PI / 2);
-      ctx.drawImage(placement.drawable, 0, 0);
-      ctx.restore();
-    }
-
-    /**
-     * Формирует JSON atlas в формате Phaser3.
-     */
-    function buildPhaserAtlasJson(props) {
-      const { packName, packResult } = props;
-      const frames = {};
-
-      packResult.placements.forEach((placement) => {
-        frames[placement.fileName] = {
-          frame: {
-            x: placement.atlasX,
-            y: placement.atlasY,
-            w: placement.frameWidth,
-            h: placement.frameHeight,
-          },
-          rotated: Boolean(placement.rotated),
-          trimmed: Boolean(placement.trimmed),
-          spriteSourceSize: {
-            x: placement.spriteSourceX,
-            y: placement.spriteSourceY,
-            w: placement.spriteSourceWidth,
-            h: placement.spriteSourceHeight,
-          },
-          sourceSize: {
-            w: placement.sourceWidth,
-            h: placement.sourceHeight,
-          },
-        };
-      });
-
-      return {
-        frames,
-        meta: {
-          app: "figma2assets",
-          version: "1.0",
-          image: `${packName}.png`,
-          format: "RGBA8888",
-          size: {
-            w: packResult.atlasWidth,
-            h: packResult.atlasHeight,
-          },
-          scale: "1",
-        },
-      };
-    }
-
-    /**
-     * Преобразует экспортированные PNG в структуру для пэкера.
-     */
-    async function prepareImagesForPacking(files, options) {
-      const prepared = [];
-
-      for (let index = 0; index < files.length; index += 1) {
-        const file = files[index];
-        setStatus(`Подготовка PNG для atlas… ${index + 1}/${files.length}\n${file.fileName}`);
-
-        const decoded = await bytesToDrawableImage(file.bytes);
-
-        try {
-          prepared.push(createPreparedImageForPacking(file, decoded, options));
-        } finally {
-          decoded.dispose();
-        }
-      }
-
-      return prepared;
-    }
-
-    /**
-     * Готовит canvas с обрезанными прозрачными краями и сохраняет metadata для atlas JSON.
-     */
-    function createPreparedImageForPacking(file, decoded, options) {
-      const sourceCanvas = drawDecodedImageToCanvas(decoded);
-      const sourceWidth = sourceCanvas.width;
-      const sourceHeight = sourceCanvas.height;
-      const trimBounds = options.allowTrim
-        ? findOpaqueBoundsInCanvas(sourceCanvas, options.alphaThreshold)
-        : createFullImageBounds(sourceWidth, sourceHeight);
-      const safeBounds = trimBounds || createEmptyImageBounds(sourceWidth, sourceHeight);
-      const drawable = drawTrimmedImageToCanvas(sourceCanvas, safeBounds);
-      const trimmed = isTrimmedBounds(safeBounds, sourceWidth, sourceHeight);
-
-      return {
-        fileName: file.fileName,
-        bytes: file.bytes,
-        width: safeBounds.width,
-        height: safeBounds.height,
-        sourceWidth,
-        sourceHeight,
-        spriteSourceX: safeBounds.x,
-        spriteSourceY: safeBounds.y,
-        spriteSourceWidth: safeBounds.width,
-        spriteSourceHeight: safeBounds.height,
-        trimmed,
-        drawable,
-        dispose: () => {},
-      };
-    }
-
-    /**
-     * Рисует исходный bitmap/image на canvas, чтобы можно было читать alpha и делать crop.
-     */
-    function drawDecodedImageToCanvas(decoded) {
-      const canvas = document.createElement("canvas");
-      canvas.width = decoded.width;
-      canvas.height = decoded.height;
-
-      const ctx = canvas.getContext("2d");
-      if (!ctx) {
-        throw new Error("Canvas 2D context is not available");
-      }
-
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.drawImage(decoded.drawable, 0, 0);
-      return canvas;
-    }
-
-    /**
-     * Находит bounding box пикселей с alpha выше threshold.
-     */
-    function findOpaqueBoundsInCanvas(canvas, alphaThreshold) {
-      const ctx = canvas.getContext("2d");
-      if (!ctx) {
-        throw new Error("Canvas 2D context is not available");
-      }
-
-      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      return findOpaqueBounds(imageData.data, canvas.width, canvas.height, alphaThreshold);
-    }
-
-    /**
-     * Сканирует ImageData и возвращает минимальный прямоугольник непрозрачных пикселей.
-     */
-    function findOpaqueBounds(data, width, height, alphaThreshold) {
-      const threshold = Number(alphaThreshold || 0);
-      let minX = width;
-      let minY = height;
-      let maxX = -1;
-      let maxY = -1;
-
-      for (let y = 0; y < height; y += 1) {
-        for (let x = 0; x < width; x += 1) {
-          const alpha = data[(y * width + x) * 4 + 3];
-          if (alpha <= threshold) continue;
-
-          if (x < minX) minX = x;
-          if (y < minY) minY = y;
-          if (x > maxX) maxX = x;
-          if (y > maxY) maxY = y;
-        }
-      }
-
-      if (maxX < minX || maxY < minY) return null;
-
-      return {
-        x: minX,
-        y: minY,
-        width: maxX - minX + 1,
-        height: maxY - minY + 1,
-      };
-    }
-
-    /**
-     * Возвращает весь PNG как bounds, если trim отключен.
-     */
-    function createFullImageBounds(width, height) {
-      return {
-        x: 0,
-        y: 0,
-        width: Math.max(1, width),
-        height: Math.max(1, height),
-      };
-    }
-
-    /**
-     * Для полностью прозрачного PNG пакуем один прозрачный пиксель и сохраняем sourceSize.
-     */
-    function createEmptyImageBounds(sourceWidth, sourceHeight) {
-      return {
-        x: 0,
-        y: 0,
-        width: Math.min(1, Math.max(1, sourceWidth)),
-        height: Math.min(1, Math.max(1, sourceHeight)),
-      };
-    }
-
-    /**
-     * Создает отдельный canvas с уже обрезанным содержимым.
-     */
-    function drawTrimmedImageToCanvas(sourceCanvas, bounds) {
-      const canvas = document.createElement("canvas");
-      canvas.width = bounds.width;
-      canvas.height = bounds.height;
-
-      const ctx = canvas.getContext("2d");
-      if (!ctx) {
-        throw new Error("Canvas 2D context is not available");
-      }
-
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.drawImage(
-        sourceCanvas,
-        bounds.x,
-        bounds.y,
-        bounds.width,
-        bounds.height,
-        0,
-        0,
-        bounds.width,
-        bounds.height,
-      );
-
-      return canvas;
-    }
-
-    /**
-     * Проверяет, изменил ли trim исходные размеры/смещение.
-     */
-    function isTrimmedBounds(bounds, sourceWidth, sourceHeight) {
-      return (
-        bounds.x !== 0 ||
-        bounds.y !== 0 ||
-        bounds.width !== sourceWidth ||
-        bounds.height !== sourceHeight
-      );
-    }
-
-    /**
-     * Освобождает ресурсы изображений после рендера atlas.
-     */
-    function disposePreparedImages(images) {
-      images.forEach((item) => {
-        if (typeof item.dispose === "function") {
-          item.dispose();
-        }
-      });
-    }
-
-    /**
-     * Создает уникальное camelCase имя ассета для TS.
-     */
-    function createUniqueAssetKey(rawName, used) {
-      const base = toCamelCase(rawName);
-      let next = base || "asset";
-      let suffix = 2;
-
-      while (used.has(next)) {
-        next = `${base}${suffix}`;
-        suffix += 1;
-      }
-
-      used.add(next);
-      return next;
-    }
-
-    /**
-     * Генерирует исходники TS-файлов для phaser/scene.
-     */
-    function buildPhaserSceneSources(props) {
-      const { packName, manifest, atlasBasePath } = props;
-      const packCamel = toCamelCase(packName);
-      const packPascal = toPascalCase(packName);
-      const sceneClassName = `${toPascalCase(packName)}Scene`;
-      const sceneKey = sceneClassName;
-      const preloadFunctionName = `preload${packPascal}Assets`;
-      const atlasPngUrl = buildAtlasFilePath(atlasBasePath, `${packName}.png`);
-      const atlasJsonUrl = buildAtlasFilePath(atlasBasePath, `${packName}.json`);
-
-      const usedAssetKeys = new Set();
-      const entries = manifest.items.map((item) => {
-        const frameBaseName = String(item.fileName || "item.png").replace(/\.png$/i, "");
-        const assetKey = createUniqueAssetKey(frameBaseName, usedAssetKeys);
-        const kind = item.kind === "nine" ? "nine" : "image";
-        const ninePadding = kind === "nine"
-          ? (Number.isFinite(Number(item.ninePadding)) ? Number(item.ninePadding) : detectNinePadding(item.name || "") || 20)
-          : undefined;
-
-        return {
-          assetKey,
-          kind,
-          ninePadding,
-          x: Number(item.x || 0),
-          y: Number(item.y || 0),
-          width: Number(item.width || 0),
-          height: Number(item.height || 0),
-          frameName: item.fileName,
-        };
-      });
-
-      // Стабильный порядок для тестовой сцены: сверху вниз, слева направо.
-      entries.sort((a, b) => {
-        if (a.y !== b.y) return a.y - b.y;
-        if (a.x !== b.x) return a.x - b.x;
-        return a.assetKey.localeCompare(b.assetKey);
-      });
-
-      const typesTs = `// This file is auto-generated by figma2assets plugin. Do not edit manually.
-export type AutoAssetKind = "image" | "nine";
-
-export interface IAutoAssetData {
-  readonly name: string;
-  readonly url: string;
-  readonly frameName: string;
-  readonly width: number;
-  readonly height: number;
-  readonly x: number;
-  readonly y: number;
-  readonly kind: AutoAssetKind;
-  readonly ninePadding?: number;
-}
-
-export type AutoAssetMap = Record<string, IAutoAssetData>;
-
-export interface IAutoAtlasConfig {
-  readonly name: string;
-  readonly pngUrl: string;
-  readonly jsonUrl: string;
-}
-
-export interface IAutoAssetsConfig {
-  readonly images: AutoAssetMap;
-  readonly preload: {
-    readonly atlases: readonly IAutoAtlasConfig[];
-  };
-}
-
-export interface IAddAssetImageProps {
-  scene: Phaser.Scene;
-  asset: IAutoAssetData;
-  x?: number;
-  y?: number;
-}
-
-export interface IAddAssetNineProps {
-  scene: Phaser.Scene;
-  asset: IAutoAssetData;
-  width?: number;
-  height?: number;
-  x?: number;
-  y?: number;
-}
-`;
-
-      const utilsTs = `// This file is auto-generated by figma2assets plugin. Do not edit manually.
-import { Align } from "@kvisaz/phaser-sugar";
-import { IAddAssetImageProps, IAddAssetNineProps } from "./types";
-
-export function addAssetImage(props: IAddAssetImageProps): Phaser.GameObjects.Image {
-  const { scene, asset, x, y } = props;
-  const targetX = x ?? asset.x;
-  const targetY = y ?? asset.y;
-  const imageNode = scene.add.image(0, 0, asset.url, asset.frameName);
-  Align.setLeftTop(imageNode, targetX, targetY);
-  return imageNode;
-}
-
-export function addAssetNine(props: IAddAssetNineProps): Phaser.GameObjects.NineSlice {
-  const { scene, asset, width, height, x, y } = props;
-  const padding = asset.ninePadding ?? 20;
-  const targetWidth = width ?? asset.width;
-  const targetHeight = height ?? asset.height;
-  const targetX = x ?? asset.x;
-  const targetY = y ?? asset.y;
-
-  const nineSliceNode = scene.add.existing(
-    new Phaser.GameObjects.NineSlice(
-      scene,
-      0,
-      0,
-      asset.url,
-      asset.frameName,
-      targetWidth,
-      targetHeight,
-      padding,
-      padding,
-      padding,
-      padding,
-    ),
-  );
-
-  Align.setLeftTop(nineSliceNode, targetX, targetY);
-  return nineSliceNode;
-}
-`;
-
-      const assetsObjectLines = entries.map((entry) => {
-        const ninePaddingLine = entry.kind === "nine" ? `\n    ninePadding: ${entry.ninePadding},` : "";
-        return `  ${entry.assetKey}: {\n    name: "${entry.assetKey}",\n    url: "${atlasPngUrl}",\n    frameName: "${entry.frameName}",\n    width: ${entry.width},\n    height: ${entry.height},\n    x: ${entry.x},\n    y: ${entry.y},\n    kind: "${entry.kind}",${ninePaddingLine}\n  },`;
-      });
-
-      const orderLines = entries.map((entry) => `  "${entry.assetKey}",`);
-
-      const assetsTs = `// This file is auto-generated by figma2assets plugin. Do not edit manually.
-import { AutoAssetMap, IAutoAssetsConfig } from "./types";
-
-export const ${packCamel}AutoAssetsConst = {
-${assetsObjectLines.join("\n")}
-} as const;
-
-export type AutoAssetName = keyof typeof ${packCamel}AutoAssetsConst;
-
-export const ${packCamel}AutoAssetOrder: readonly AutoAssetName[] = [
-${orderLines.join("\n")}
-];
-
-// Отдельный конфиг для текущего pack: изображения + список atlas для preload.
-export const ${packCamel}AutoAssetsConfig: IAutoAssetsConfig = {
-  images: ${packCamel}AutoAssetsConst,
-  preload: {
-    atlases: [
-      {
-        name: "${packName}",
-        pngUrl: "${atlasPngUrl}",
-        jsonUrl: "${atlasJsonUrl}",
-      },
-    ],
-  },
-} as const;
-
-export const ${packCamel}AutoAssets: AutoAssetMap = ${packCamel}AutoAssetsConfig.images;
-export const ${packCamel}AutoAtlas = ${packCamel}AutoAssetsConfig.preload.atlases[0];
-
-// Экспортируем pack-specific preload, чтобы сцена/игра могла подгружать atlas одной функцией.
-export function ${preloadFunctionName}(scene: Phaser.Scene): void {
-  ${packCamel}AutoAssetsConfig.preload.atlases.forEach((atlas) => {
-    if (scene.textures.exists(atlas.pngUrl)) return;
-    scene.load.atlas(atlas.pngUrl, atlas.pngUrl, atlas.jsonUrl);
-  });
-}
-`;
-
-      const sceneTs = `// This file is auto-generated by figma2assets plugin. Do not edit manually.
-import { addAssetImage, addAssetNine } from "./utils";
-import { ${packCamel}AutoAssets, ${packCamel}AutoAssetOrder, AutoAssetName, ${preloadFunctionName} } from "./${packName}-assets";
-
-export class ${sceneClassName} extends Phaser.Scene {
-  constructor() {
-    super({ key: "${sceneKey}" });
-  }
-
-  preload(): void {
-    ${preloadFunctionName}(this);
-  }
-
-  create(): void {
-    ${packCamel}AutoAssetOrder.forEach((assetName: AutoAssetName) => {
-      const asset = ${packCamel}AutoAssets[assetName];
-      if (asset.kind === "nine") {
-        addAssetNine({ scene: this, asset });
-        return;
-      }
-      addAssetImage({ scene: this, asset });
-    });
-  }
-}
-`;
-
-      return {
-        typesTs,
-        utilsTs,
-        assetsTs,
-        sceneTs,
-      };
-    }
-
-    function normalizeServerUrl(input) {
-      const value = String(input || "").trim();
-      return value || DEFAULT_SERVER_URL;
+    function formatUnsafeNameWarningsForStatus(warnings) {
+      return warnings.map((warning) => {
+        const invalidCharacters = Array.isArray(warning.invalidCharacters)
+          ? warning.invalidCharacters.map((char) => JSON.stringify(char)).join(", ")
+          : "";
+        const suffix = invalidCharacters ? ` (${invalidCharacters})` : "";
+        return `- ${warning.role}: "${warning.name}" -> "${warning.safeName}"${suffix}`;
+      }).join("\n");
     }
 
     function toBase64FromBytes(bytes) {
@@ -1634,329 +327,135 @@ export class ${sceneClassName} extends Phaser.Scene {
       return btoa(binary);
     }
 
-    async function postToCompanionServer(props) {
-      const { serverUrl, packName, payload, atlasPngBytes, atlasJson, sceneSources, atlasBasePath } = props;
-
-      const requestBody = {
-        packName,
-        atlasBasePath,
-        manifest: {
-          ...payload.manifest,
-          packName,
-        },
-        files: payload.files.map((file) => ({
-          fileName: file.fileName,
-          bytesBase64: toBase64FromBytes(file.bytes),
-        })),
-        atlas: {
-          pngFileName: `${packName}.png`,
-          jsonFileName: `${packName}.json`,
-          pngBytesBase64: toBase64FromBytes(atlasPngBytes),
-          json: atlasJson,
-        },
-        sceneSources,
-      };
-
-      const response = await fetch(`${normalizeServerUrl(serverUrl)}/export`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(requestBody),
-      });
-
-      const responseText = await response.text();
-      let responseJson = null;
-
-      try {
-        responseJson = responseText ? JSON.parse(responseText) : null;
-      } catch (error) {
-        responseJson = null;
-      }
-
-      if (!response.ok) {
-        const serverMessage = responseJson && responseJson.error
-          ? responseJson.error
-          : responseText || `HTTP ${response.status}`;
-        throw new Error(`Companion server error: ${serverMessage}`);
-      }
-
-      return responseJson;
-    }
-
-    /**
-     * Собирает весь ZIP-архив в нужной структуре папок.
-     */
-    async function buildZipArchive(props) {
-      const { packName, payload, atlasPngBytes, atlasJson, sceneSources } = props;
-      const JSZipCtor = window.JSZip || globalThis.JSZip;
-      if (!JSZipCtor) {
-        throw new Error(`JSZip is not available. ${describeJsZipState()}`);
-      }
-
-      const zip = new JSZipCtor();
-
-      // 1) Исходные PNG по верхним детям узла.
-      const pngFolder = zip.folder("png") || zip;
-      payload.files.forEach((file) => {
-        pngFolder.file(file.fileName, file.bytes);
-      });
-
-      // 2) Manifest в корне ZIP.
-      const manifestForZip = {
-        ...payload.manifest,
-        packName,
-      };
-      zip.file("manifest.json", JSON.stringify(manifestForZip, null, 2));
-
-      // 3) Phaser atlas файлы.
-      const phaserFolder = zip.folder("phaser") || zip;
-      const atlasFolder = phaserFolder.folder("atlases") || phaserFolder;
-      atlasFolder.file(`${packName}.png`, atlasPngBytes);
-      atlasFolder.file(`${packName}.json`, JSON.stringify(atlasJson, null, 2));
-
-      // 4) Phaser scene файлы.
-      const sceneFolder = phaserFolder.folder("scene") || phaserFolder;
-      sceneFolder.file(`${packName}-scene.ts`, sceneSources.sceneTs);
-      sceneFolder.file(`${packName}-assets.ts`, sceneSources.assetsTs);
-      sceneFolder.file("utils.ts", sceneSources.utilsTs);
-      sceneFolder.file("types.ts", sceneSources.typesTs);
-
-      const blob = await zip.generateAsync({ type: "blob", compression: "DEFLATE" });
-      return blob;
-    }
-
-    /**
-     * Готовит atlas + JSON + TS-исходники один раз, чтобы потом либо скачать ZIP,
-     * либо отправить результат в локальный companion server.
-     */
-    async function prepareGeneratedArtifacts() {
-      if (!exportPayload) {
-        throw new Error("Нет данных экспорта. Сначала выполните экспорт из Figma.");
-      }
-
-      const packName = slugify(packNameInput.value || exportPayload.packName || "pack");
-      const atlasBasePath = normalizeAtlasBasePath(atlasBasePathInput.value || DEFAULT_ATLAS_BASE_PATH);
-      packNameInput.value = packName;
-      atlasBasePathInput.value = atlasBasePath;
-
-      let preparedImages = [];
-
-      try {
-        preparedImages = await prepareImagesForPacking(exportPayload.files, ATLAS_PACKER_OPTIONS);
-        const trimStats = calculateTrimStats(preparedImages);
-
-        setStatus(`Упаковка atlas (${ATLAS_PACKER_OPTIONS.algorithm})…`);
-        const packResult = packImagesForAtlas(preparedImages, ATLAS_PACKER_OPTIONS);
-        if (packResult.fallbackReason) {
-          appendLog(`WARN: MaxRects fallback to shelf: ${packResult.fallbackReason}`);
-        }
-        const atlasUsage = calculateAtlasUsage(packResult);
-        const rotatedCount = countRotatedPlacements(packResult);
-
-        setStatus(
-          `Рендер atlas PNG…
-` +
-          `Пэкер: ${packResult.algorithm}
-` +
-          `Эвристика: ${packResult.heuristic || "n/a"}
-` +
-          `Размер atlas: ${packResult.atlasWidth}x${packResult.atlasHeight}
-` +
-          `Frames: ${packResult.placements.length}
-` +
-          `Rotated: ${rotatedCount}
-` +
-          `Trimmed: ${trimStats.trimmedCount}, saved ${formatPercent(trimStats.savedRatio)}
-` +
-          `Заполнение: ${formatAtlasUsagePercent(atlasUsage)}`,
-        );
-        const atlasPngBytes = await renderAtlasPng(packResult);
-
-        setStatus("Формирование atlas JSON…");
-        const atlasJson = buildPhaserAtlasJson({ packName, packResult });
-
-        setStatus("Генерация Phaser scene файлов…");
-        const sceneSources = buildPhaserSceneSources({
-          packName,
-          manifest: exportPayload.manifest,
-          atlasBasePath,
-        });
-
-        return {
-          packName,
-          atlasBasePath,
-          atlasJson,
-          atlasPngBytes,
-          sceneSources,
-          preparedImages,
-        };
-      } catch (error) {
-        disposePreparedImages(preparedImages);
-        throw error;
-      }
-    }
-
-    /**
-     * Полный сценарий: atlas pack + генерация TS + ZIP.
-     */
-    async function downloadZip() {
-      if (!exportPayload) {
-        setStatus("Нет данных для скачивания. Сначала выполните экспорт.");
-        return;
-      }
-
-      downloadZipButton.disabled = true;
-      syncToGameButton.disabled = true;
-      const generationStartedAt = Date.now();
-      let preparedImages = [];
-
-      try {
-        const artifacts = await prepareGeneratedArtifacts();
-        preparedImages = artifacts.preparedImages;
-
-        setStatus("Сборка ZIP структуры…");
-        const zipBlob = await buildZipArchive({
-          packName: artifacts.packName,
-          payload: exportPayload,
-          atlasPngBytes: artifacts.atlasPngBytes,
-          atlasJson: artifacts.atlasJson,
-          sceneSources: artifacts.sceneSources,
-        });
-
-        downloadBlob(zipBlob, `${artifacts.packName}.zip`);
-        const generationDurationText = formatDuration(Date.now() - generationStartedAt);
-        appendLog(`Генерация заняла время: ${generationDurationText}`);
-        setStatus(
-          `Готово. Скачан архив ${artifacts.packName}.zip
-` +
-          `Генерация заняла время: ${generationDurationText}`,
-        );
-
-        postToPlugin({ type: "EXPORT_DONE" });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        const generationDurationText = formatDuration(Date.now() - generationStartedAt);
-        appendLog(`Генерация прервалась через: ${generationDurationText}`);
-        setStatus(
-          `Ошибка при создании ZIP:
-${message}
-
-` +
-          `Генерация прервалась через: ${generationDurationText}`,
-        );
-        postToPlugin({ type: "EXPORT_ERROR", message });
-      } finally {
-        disposePreparedImages(preparedImages);
-        downloadZipButton.disabled = false;
-        syncToGameButton.disabled = false;
-      }
-    }
-
     async function syncToGame() {
       if (!exportPayload) {
-        setStatus("Нет данных для синхронизации. Сначала выполните экспорт.");
+        setStatus("Нет данных для экспорта. Сначала выполните экспорт из Figma.");
         return;
       }
 
-      downloadZipButton.disabled = true;
+      const nextSettings = collectSettingsFromUi();
+      if (!nextSettings.atlasOutputDir || !nextSettings.tsOutputDir) {
+        setStatus("Задай пути экспорта atlas и TS перед экспортом файлов.");
+        return;
+      }
+
       syncToGameButton.disabled = true;
-      const generationStartedAt = Date.now();
-      let preparedImages = [];
+      const startedAt = Date.now();
 
       try {
-        const artifacts = await prepareGeneratedArtifacts();
-        preparedImages = artifacts.preparedImages;
-        const serverUrl = normalizeServerUrl(serverUrlInput.value);
-        serverUrlInput.value = serverUrl;
+        savePluginSettings();
+        await saveServerSettings();
+        setStatus(`Отправка экспорта в companion server...\n${nextSettings.serverUrl}`);
 
-        setStatus(`Отправка в companion server…
-${serverUrl}`);
-        const responseJson = await postToCompanionServer({
-          serverUrl,
-          packName: artifacts.packName,
-          payload: exportPayload,
-          atlasPngBytes: artifacts.atlasPngBytes,
-          atlasJson: artifacts.atlasJson,
-          sceneSources: artifacts.sceneSources,
-          atlasBasePath: artifacts.atlasBasePath,
+        const response = await fetch(`${nextSettings.serverUrl}/export`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            packName: nextSettings.packName,
+            atlasBasePath: nextSettings.atlasBasePath,
+            atlasOutputDir: nextSettings.atlasOutputDir,
+            tsOutputDir: nextSettings.tsOutputDir,
+            manifest: {
+              ...exportPayload.manifest,
+              packName: nextSettings.packName,
+            },
+            files: exportPayload.files.map((file) => ({
+              fileName: file.fileName,
+              bytesBase64: toBase64FromBytes(file.bytes),
+            })),
+          }),
         });
 
-        const generationDurationText = formatDuration(Date.now() - generationStartedAt);
-        appendLog(`Синхронизация заняла время: ${generationDurationText}`);
-        setStatus(
-          `Готово. Файлы записаны в игру.
-` +
-          `Pack: ${artifacts.packName}
-` +
-          `Server: ${serverUrl}
-` +
-          `Atlas dir: ${responseJson && responseJson.atlasOutputDir ? responseJson.atlasOutputDir : "n/a"}
-` +
-          `Scene dir: ${responseJson && responseJson.sceneOutputDir ? responseJson.sceneOutputDir : "n/a"}
-` +
-          `Синхронизация заняла время: ${generationDurationText}`,
-        );
+        const responseText = await response.text();
+        let responseJson = null;
+        try {
+          responseJson = responseText ? JSON.parse(responseText) : null;
+        } catch (error) {
+          responseJson = null;
+        }
 
+        if (!response.ok || !responseJson || responseJson.ok === false) {
+          const serverMessage = responseJson && responseJson.error
+            ? responseJson.error
+            : responseText || `HTTP ${response.status}`;
+          throw new Error(serverMessage);
+        }
+
+        const seconds = ((Date.now() - startedAt) / 1000).toFixed(1);
+        setStatus(
+          `Готово. Файлы экспортированы.\n` +
+          `Pack: ${responseJson.packName}\n` +
+          `Atlas: ${responseJson.atlasOutputDir}\n` +
+          `TS: ${responseJson.tsOutputDir}\n` +
+          `Записано файлов: ${responseJson.filesWritten.length}\n` +
+          `Время: ${seconds} сек.`,
+        );
         postToPlugin({ type: "EXPORT_DONE" });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        const generationDurationText = formatDuration(Date.now() - generationStartedAt);
-        appendLog(`Синхронизация прервалась через: ${generationDurationText}`);
-        setStatus(
-          `Ошибка синхронизации:
-${message}
-
-` +
-          `Синхронизация прервалась через: ${generationDurationText}`,
-        );
+        setStatus(`Ошибка экспорта файлов:\n${message}`);
         postToPlugin({ type: "EXPORT_ERROR", message });
       } finally {
-        disposePreparedImages(preparedImages);
-        downloadZipButton.disabled = false;
         syncToGameButton.disabled = false;
       }
     }
 
-    /**
-     * Слушает сообщения от code.js.
-     */
     window.onmessage = (event) => {
       const msg = event.data && event.data.pluginMessage;
       if (!msg || typeof msg !== "object") return;
+
+      if (msg.type === "SETTINGS_LOADED") {
+        settings = {
+          ...settings,
+          ...(msg.settings || {}),
+        };
+        renderSettings();
+        fetchServerSettings().catch((error) => {
+          const message = error instanceof Error ? error.message : String(error);
+          appendLog(`WARN: server settings недоступны: ${message}`);
+        });
+        return;
+      }
+
+      if (msg.type === "SETTINGS_LOAD_FAILED" || msg.type === "SETTINGS_SAVE_FAILED") {
+        appendLog(`WARN: ${msg.message || "ошибка настроек"}`);
+        return;
+      }
 
       if (msg.type === "EXPORT_PROGRESS") {
         const done = Number(msg.done || 0);
         const total = Number(msg.total || 0);
         const currentName = msg.currentName ? `\nТекущий узел: ${msg.currentName}` : "";
-        setStatus(`Экспорт PNG… ${done}/${total}${currentName}`);
+        setStatus(`Экспорт PNG из Figma... ${done}/${total}${currentName}`);
         return;
       }
 
       if (msg.type === "EXPORT_READY") {
         exportPayload = msg;
-        packNameInput.value = slugify(msg.packName || "pack");
-        downloadZipButton.disabled = false;
+        settings.packName = settings.packName || slugify(msg.packName || "pack");
+        renderSettings();
         syncToGameButton.disabled = false;
+
         const unsafeNameWarnings = getUnsafeNameWarningsFromPayload(msg);
         const unsafeNameWarningText = unsafeNameWarnings.length > 0
           ? `\n\nПредупреждения по именам:\n${formatUnsafeNameWarningsForStatus(unsafeNameWarnings)}`
           : "";
+
         setStatus(
-          `Экспорт завершен.\n` +
-          `Pack: ${packNameInput.value}\n` +
-          `Atlas base path: ${normalizeAtlasBasePath(atlasBasePathInput.value)}\n` +
+          `Экспорт из Figma готов.\n` +
+          `Pack: ${settings.packName}\n` +
           `PNG файлов: ${msg.files.length}\n` +
-          `Нажмите \"Скачать ZIP\".` +
+          `Atlas path: ${settings.atlasOutputDir || "не задан"}\n` +
+          `TS path: ${settings.tsOutputDir || "не задан"}\n` +
+          `Нажмите "Экспортировать файлы".` +
           unsafeNameWarningText,
         );
         return;
       }
 
       if (msg.type === "EXPORT_FAILED") {
-        downloadZipButton.disabled = true;
-        setStatus(`Ошибка экспорта:\n${msg.message || "Неизвестная ошибка"}`);
-        appendLog(`ERROR: ${msg.message || "Неизвестная ошибка"}`);
+        syncToGameButton.disabled = true;
+        setStatus(`Ошибка экспорта из Figma:\n${msg.message || "Неизвестная ошибка"}`);
         return;
       }
 
@@ -1967,24 +466,27 @@ ${message}
       }
     };
 
-    // Кнопки управления UI.
-    syncToGameButton.addEventListener("click", () => {
-      syncToGame();
+    packNameInput.addEventListener("change", savePluginSettings);
+    atlasBasePathInput.addEventListener("change", savePluginSettings);
+    serverUrlInput.addEventListener("change", () => {
+      savePluginSettings();
+      fetchServerSettings().catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        setStatus(`Server settings недоступны:\n${message}`);
+      });
     });
-
-    downloadZipButton.addEventListener("click", () => {
-      downloadZip();
-    });
-
+    chooseAtlasOutputDirButton.addEventListener("click", () => promptForDirectory("atlas"));
+    chooseTsOutputDirButton.addEventListener("click", () => promptForDirectory("ts"));
+    syncToGameButton.addEventListener("click", syncToGame);
     retryButton.addEventListener("click", () => {
-      downloadZipButton.disabled = true;
-      setStatus("Повторный запуск экспорта…");
+      syncToGameButton.disabled = true;
+      setStatus("Повторный экспорт из Figma...");
       postToPlugin({ type: "RETRY_EXPORT" });
     });
+    closeButton.addEventListener("click", () => postToPlugin({ type: "CLOSE" }));
 
-    closeButton.addEventListener("click", () => {
-      postToPlugin({ type: "CLOSE" });
-    });
+    renderSettings();
+    postToPlugin({ type: "GET_SETTINGS" });
   </script>
 </body>
 </html>

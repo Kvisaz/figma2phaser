@@ -1,46 +1,19 @@
-Ниже `readme.md` целиком.
-
-Сделал уже под **текущую схему с companion server**, а не под старый ZIP-only вариант. За основу взял структуру и стиль твоего старого README.
-
-````md id="d1j1um"
 # Figma Phaser View Export
 
-Локальный Figma plugin для экспорта UI-узлов в формат, удобный для Phaser.
+Локальный Figma plugin для экспорта выбранного UI-узла в Phaser-friendly atlas и TypeScript-файлы.
 
-Плагин берет один выбранный корневой узел в Figma, экспортирует его верхних детей в PNG, собирает `manifest.json` с координатами и отправляет данные в UI.  
-Дальше UI умеет:
+Проект работает через companion server:
 
-- собрать ZIP для ручного скачивания;
-- отправить экспорт в локальный companion server;
-- получить на выходе atlas (`png + json`) и TypeScript-файлы прямо в папке игры.
+1. Плагин экспортирует верхних детей выбранного Figma-узла в PNG.
+2. UI плагина отправляет PNG, manifest и настройки на `http://localhost:3456`.
+3. `server/server.js` пакует atlas через `free-tex-packer-core`.
+4. Сервер пишет atlas PNG/JSON и TypeScript-файлы прямо в указанные папки игрового проекта.
 
----
-
-## Что делает проект
-
-Проект состоит из двух частей:
-
-### 1. Figma plugin
-Отвечает за:
-- чтение текущего выделения;
-- экспорт PNG верхних детей выбранного узла;
-- сбор `manifest.json` с координатами, размерами и метаданными;
-- отображение UI;
-- отправку результата на локальный сервер.
-
-### 2. Companion server
-Локальный Node.js сервер, который:
-- принимает экспортированные PNG и manifest из плагина;
-- упаковывает их в atlas через `free-tex-packer-core`;
-- генерирует Phaser-совместимый atlas JSON;
-- генерирует TypeScript-файлы;
-- пишет все это прямо в папку игрового проекта.
+ZIP-экспорт в этой схеме не используется.
 
 ---
 
-## Структура проекта
-
-Пример:
+## Структура
 
 ```text
 figma-plugin-phaser-view/
@@ -49,22 +22,23 @@ figma-plugin-phaser-view/
   ui.html
   readme.md
 
-  companion/
+  server/
     package.json
     server.js
-````
+    settings.local.json   # создается автоматически после сохранения путей
+```
 
-### Файлы плагина
+### Figma plugin
 
-* `manifest.json` — manifest Figma plugin
-* `code.js` — main thread плагина, экспорт PNG и manifest из Figma
-* `ui.html` — UI плагина, отправка на companion server, сборка ZIP
-* `readme.md` — инструкция
+- `manifest.json` - manifest Figma plugin.
+- `code.js` - main thread: чтение selection, экспорт PNG, сбор manifest, `figma.clientStorage`.
+- `ui.html` - UI: настройки, выбор путей, отправка экспорта на server.
 
-### Файлы companion server
+### Companion server
 
-* `companion/package.json` — зависимости локального сервера
-* `companion/server.js` — HTTP сервер для упаковки и генерации файлов
+- `server/package.json` - зависимости и npm scripts.
+- `server/server.js` - HTTP server, packing atlas, генерация TS, запись файлов.
+- `server/settings.local.json` - локальные пути экспорта, создается автоматически.
 
 ---
 
@@ -72,10 +46,10 @@ figma-plugin-phaser-view/
 
 Из выбранного корневого узла экспортируются:
 
-* только **верхние дети**
-* только **видимые** верхние дети
-* каждый верхний ребенок экспортируется как отдельный PNG
-* координаты считаются относительно левого верхнего угла корневого узла
+- только верхние дети;
+- только видимые верхние дети;
+- каждый верхний ребенок как отдельный PNG;
+- координаты относительно левого верхнего угла корневого узла.
 
 Если имя узла заканчивается на:
 
@@ -83,12 +57,16 @@ figma-plugin-phaser-view/
 nine.<число>
 ```
 
-то в `manifest.json` будет записано:
+то в manifest будет записано:
 
-* `kind: "nine"`
-* `ninePadding: <число>`
+```json
+{
+  "kind": "nine",
+  "ninePadding": 20
+}
+```
 
-Пример:
+Пример имени:
 
 ```text
 button.primary.nine.20
@@ -96,7 +74,7 @@ button.primary.nine.20
 
 ---
 
-## Формат manifest.json
+## Формат manifest
 
 Пример:
 
@@ -104,9 +82,10 @@ button.primary.nine.20
 {
   "version": 1,
   "generatedAtIso": "2026-04-20T12:00:00.000Z",
+  "packName": "cards-ui",
   "root": {
     "nodeId": "3:469",
-    "name": "main-ui",
+    "name": "cards-ui",
     "width": 1280,
     "height": 720
   },
@@ -132,125 +111,96 @@ button.primary.nine.20
 
 ---
 
-## Безопасные имена файлов
+## Имена файлов
 
-Если имя корневого узла или верхнего ребенка содержит что-то кроме:
+Безопасный формат имени:
 
-* латиницы
-* цифр
-* `.`
-* `_`
-* `-`
+- латиница;
+- цифры;
+- `.`;
+- `_`;
+- `-`.
 
-плагин показывает предупреждение в UI и пишет информацию в:
+Если имя корневого узла или верхнего ребенка содержит другие символы, плагин показывает предупреждение и пишет данные в:
 
 ```json
 manifest.warnings.unsafeNames
 ```
 
-Экспорт при этом не останавливается.
-Для итоговых файлов используется безопасный `slugify`.
+Экспорт не останавливается. Для файлов используется безопасный `slugify`.
 
 ---
 
-## Что генерируется в игре
+## Что генерируется
 
-Companion server пишет в проект игры:
+Сервер пишет:
 
 ```text
-public/assets/atlases/[packName].png
-public/assets/atlases/[packName].json
-src/autogen/[packName]-assets.ts
-src/autogen/[packName]-scene.ts
-src/autogen/types.ts
-src/autogen/utils.ts
+[atlasOutputDir]/[packName].png
+[atlasOutputDir]/[packName].json
+[tsOutputDir]/[packName]-assets.ts
+[tsOutputDir]/[packName]-scene.ts
+[tsOutputDir]/types.ts
+[tsOutputDir]/utils.ts
 ```
 
 `packName` по умолчанию берется из имени выбранного корневого узла, но его можно изменить в UI плагина.
 
 ---
 
-## Что есть в `[packName]-assets.ts`
+## Настройки путей
 
-Для каждого pack генерируются:
+В UI плагина задаются:
 
-* `export const <packCamel>AutoAssetsConfig`
-* `export function preload<PackPascal>Assets(scene)`
-* `export const <packCamel>AutoAssets`
-* `export const <packCamel>AutoAssetOrder`
+- `serverUrl` - адрес companion server, по умолчанию `http://localhost:3456`;
+- `packName` - имя atlas pack;
+- `atlasBasePath` - runtime URL для Phaser preload, например `./assets/atlases/`;
+- `atlasOutputDir` - абсолютная папка на диске для atlas `.png/.json`;
+- `tsOutputDir` - абсолютная папка на диске для `.ts` файлов.
 
-### Пример
+Важно:
 
-```ts
-export function preloadCardsUiAssets(scene) {
-  scene.load.atlas(
-    "cards-ui",
-    "./assets/atlases/cards-ui.png",
-    "./assets/atlases/cards-ui.json"
-  );
-}
-```
+- `atlasBasePath` - путь загрузки внутри игры.
+- `atlasOutputDir` - filesystem path, куда сервер пишет atlas.
+- `tsOutputDir` - filesystem path, куда сервер пишет TypeScript.
+
+Под кнопками задания путей UI показывает краткую версию пути через ellipsis. Полный путь доступен в tooltip.
 
 ---
 
-## Что есть в `[packName]-scene.ts`
+## Хранение настроек
 
-Генерируется простая Phaser scene-заглушка, которая использует preload-функцию из `[packName]-assets.ts`.
+Настройки сохраняются в двух местах:
 
-Это не финальная игровая сцена, а автогенерируемая стартовая заготовка.
+- Figma plugin: через `figma.clientStorage`.
+- Companion server: в `server/settings.local.json`.
 
----
+Зачем два места:
 
-## Как это работает
+- `figma.clientStorage` восстанавливает UI-настройки при следующем запуске плагина.
+- `server/settings.local.json` хранит filesystem paths на стороне Node.js server, где реально есть доступ к диску.
 
-Схема такая:
-
-1. В Figma выбирается один корневой узел
-2. `code.js` экспортирует верхних детей в PNG
-3. `code.js` собирает `manifest.json`
-4. данные передаются в `ui.html`
-5. `ui.html` либо:
-
-    * собирает ZIP
-    * либо отправляет payload на `http://localhost:3456/export`
-6. `server.js` принимает payload
-7. `server.js` запускает `free-tex-packer-core`
-8. `server.js` пишет atlas и TS-файлы в папку игры
+Если server не запущен, UI все равно может восстановить последние настройки из Figma. Когда server снова доступен, настройки синхронизируются.
 
 ---
 
 ## Установка плагина
 
-### 1. Подготовить файлы плагина
-
-Убедитесь, что в папке есть:
-
-* `manifest.json`
-* `code.js`
-* `ui.html`
-
-### 2. Подключить plugin в Figma
-
 В Figma:
 
-* `Plugins`
-* `Development`
-* `Import plugin from manifest...`
+1. `Plugins`.
+2. `Development`.
+3. `Import plugin from manifest...`.
+4. Выберите `manifest.json`.
 
-Выберите `manifest.json`.
-
----
-
-## Настройка manifest.json
-
-Для работы с локальным companion server в `manifest.json` должен быть разрешен localhost:
+`manifest.json` должен разрешать localhost:
 
 ```json
 {
   "networkAccess": {
     "allowedDomains": [
-      "https://cdn.jsdelivr.net",
-      "http://localhost:3456"
+      "http://localhost:3456",
+      "ws://localhost:3456"
     ]
   }
 }
@@ -258,50 +208,12 @@ export function preloadCardsUiAssets(scene) {
 
 ---
 
-## Установка companion server
-
-Перейдите в папку `companion/` и установите зависимости:
+## Установка server
 
 ```bash
+cd server
 npm install
-```
-
-Минимально нужен пакет:
-
-```bash
-npm install free-tex-packer-core
-```
-
----
-
-## Настройка server.js
-
-В `server.js` надо поменять пути под свой проект:
-
-```js
-const GAME_ROOT_DIR = "/Users/sergeytokarev/work_my/YOUR_GAME_PROJECT";
-const ATLAS_OUTPUT_DIR = path.join(GAME_ROOT_DIR, "public", "assets", "atlases");
-const SCENE_OUTPUT_DIR = path.join(GAME_ROOT_DIR, "src", "autogen");
-```
-
-### Что это значит
-
-* `GAME_ROOT_DIR` — корень проекта игры
-* `ATLAS_OUTPUT_DIR` — куда писать atlas png/json
-* `SCENE_OUTPUT_DIR` — куда писать TypeScript-файлы
-
----
-
-## Запуск companion server
-
-```bash
-node server.js
-```
-
-Если все нормально, сервер поднимется на:
-
-```text
-http://localhost:3456
+npm start
 ```
 
 Проверка:
@@ -310,71 +222,99 @@ http://localhost:3456
 GET http://localhost:3456/health
 ```
 
+Настройки:
+
+```text
+GET  http://localhost:3456/settings
+POST http://localhost:3456/settings
+```
+
 ---
 
 ## Как пользоваться
 
-### Вариант 1. Скачать ZIP
+1. Запустите server:
 
-1. Выберите ровно один корневой узел в Figma
-2. Запустите плагин
-3. Дождитесь завершения экспорта
-4. При необходимости поправьте `packName`
-5. Нажмите `Скачать ZIP`
+```bash
+cd server
+npm start
+```
 
-### Вариант 2. Синхронизировать в игру
+2. В Figma выберите ровно один корневой UI-узел.
+3. Запустите plugin.
+4. Дождитесь завершения экспорта PNG из Figma.
+5. Проверьте `packName`, `atlasBasePath`, `serverUrl`.
+6. Нажмите `Задать путь экспорта atlas` и укажите абсолютную папку для `.png/.json`.
+7. Нажмите `Задать путь экспорта TS` и укажите абсолютную папку для `.ts`.
+8. Нажмите `Экспортировать файлы`.
 
-1. Запустите companion server
-2. Выберите ровно один корневой узел в Figma
-3. Запустите плагин
-4. Дождитесь завершения экспорта
-5. При необходимости поправьте:
-
-    * `packName`
-    * `atlasBasePath`
-6. Нажмите `Синхронизировать в игру`
-
-После этого atlas и TS-файлы будут записаны прямо в проект игры.
+После этого server перезапишет atlas и TS-файлы в указанных папках.
 
 ---
 
-## atlasBasePath
+## API server
 
-Поле `atlasBasePath` задается в UI плагина.
+### `GET /health`
 
-По умолчанию:
+Возвращает состояние server и текущие output paths.
 
-```text
-./assets/atlases/
+### `GET /settings`
+
+Возвращает сохраненные пути:
+
+```json
+{
+  "ok": true,
+  "settings": {
+    "atlasOutputDir": "/path/to/public/assets/atlases",
+    "tsOutputDir": "/path/to/src/autogen"
+  }
+}
 ```
 
-Этот путь попадает в генерируемый preload-код.
+### `POST /settings`
 
-Пример:
+Сохраняет пути:
 
-```ts
-scene.load.atlas(
-  "cards-ui",
-  "./assets/atlases/cards-ui.png",
-  "./assets/atlases/cards-ui.json"
-);
+```json
+{
+  "atlasOutputDir": "/path/to/public/assets/atlases",
+  "tsOutputDir": "/path/to/src/autogen"
+}
 ```
 
-Важно:
+### `POST /export`
 
-* это **путь загрузки внутри игры**
-* а не абсолютный путь на диске
+Принимает:
+
+```json
+{
+  "packName": "cards-ui",
+  "atlasBasePath": "./assets/atlases/",
+  "atlasOutputDir": "/path/to/public/assets/atlases",
+  "tsOutputDir": "/path/to/src/autogen",
+  "manifest": {},
+  "files": [
+    {
+      "fileName": "button.play.png",
+      "bytesBase64": "..."
+    }
+  ]
+}
+```
+
+Пишет файлы на диск и возвращает список записанных файлов.
 
 ---
 
 ## Ограничения
 
-* экспортируются только верхние дети выбранного узла
-* скрытые узлы пропускаются
-* должен быть выбран ровно один корневой узел
-* plugin не пишет в файловую систему напрямую
-* запись в папку игры выполняет только companion server
-* текущая схема — это ручной sync по кнопке, а не настоящий live background sync
+- Должен быть выбран ровно один корневой узел.
+- Экспортируются только верхние дети выбранного узла.
+- Скрытые узлы пропускаются.
+- Figma plugin не пишет в файловую систему напрямую.
+- Запись файлов выполняет только companion server.
+- Текущая схема - ручной export по кнопке, не live-sync.
 
 ---
 
@@ -382,84 +322,42 @@ scene.load.atlas(
 
 ### `Выберите ровно один корневой узел`
 
-Выделено 0 или больше 1 узла.
+В Figma выделено 0 или больше 1 узла.
 
 ### `Выбранный узел не поддерживает children`
 
-Выбран узел без children.
+Выбран узел без дочерних слоев.
 
 ### `Не удалось экспортировать ни одного PNG`
 
-Все дети были скрыты или не экспортировались.
+Все верхние дети скрыты или не экспортировались.
 
 ### `Failed to fetch`
 
-Плагин не смог достучаться до `http://localhost:3456/export`.
+Плагин не смог достучаться до server.
 
-Проверь:
+Проверьте:
 
-* запущен ли `server.js`
-* правильный ли порт
-* добавлен ли localhost в `manifest.json`
+- запущен ли `server/server.js`;
+- совпадает ли порт в `serverUrl`;
+- разрешен ли localhost в `manifest.json`.
 
 ### `Packed atlas png was not produced`
 
-Companion server не получил ожидаемый результат от `free-tex-packer-core`.
+`free-tex-packer-core` не вернул ожидаемый PNG.
 
-Обычно это значит:
+Возможные причины:
 
-* битые входные PNG
-* некорректный формат payload
-* проблема в настройках пакера
-
----
-
-## Дев-цикл
-
-Нормальный рабочий цикл такой:
-
-1. меняешь layout в Figma
-2. жмешь `Синхронизировать в игру`
-3. companion server перезаписывает atlas и TS-файлы
-4. dev-сборка игры подхватывает изменения
-5. Phaser-сцена перезапускается вручную или через hot/dev-логику проекта
+- битый входной PNG;
+- неподдержанный формат payload;
+- проблема в настройках packer.
 
 ---
 
-## Почему нужен companion server
+## Следующие возможные улучшения
 
-Figma plugin умеет:
-
-* читать документ
-* экспортировать изображения
-* показывать UI
-* делать HTTP-запросы
-
-Но он не должен напрямую работать как полноценный файловый инструмент для твоего игрового проекта.
-
-Поэтому companion server берет на себя:
-
-* упаковку atlas
-* запись файлов
-* интеграцию с локальной папкой игры
-
-Это делает схему проще и надежнее.
-
----
-
-## Примечание про окно плагина
-
-Окно плагина можно двигать как плавающее, но закрепить как постоянную боковую панель Figma нельзя.
-
----
-
-## Планы на будущее
-
-Возможные следующие шаги:
-
-* auto-sync по таймеру
-* websocket-уведомления в игру
-* авто-рестарт сцены
-* генерация более полного Phaser runtime-слоя
-* поддержка trim / nine-slice metadata / layout metadata
-* экспорт не только верхних детей, но и вложенной структуры
+- Native directory picker на стороне server.
+- Auto-sync по таймеру.
+- WebSocket-событие для игры после успешного экспорта.
+- Генерация более полного Phaser runtime-слоя.
+- Экспорт вложенной структуры, а не только верхних детей.

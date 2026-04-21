@@ -5,11 +5,12 @@
  * - взять 1 выделенный узел;
  * - экспортировать только его верхних детей в PNG;
  * - собрать manifest.json с координатами/размерами;
- * - отправить в UI данные для скачивания ZIP.
+ * - отправить в UI данные для синхронизации через companion server.
  */
 
 const UI_WIDTH = 520;
 const UI_HEIGHT = 360;
+const SETTINGS_STORAGE_KEY = "figma-phaser-view-export-settings";
 
 /**
  * Настройки экспорта PNG для каждого верхнего ребенка.
@@ -387,8 +388,36 @@ function postUiLog(message, level = "info") {
 /**
  * Обработка сообщений от UI.
  */
-figma.ui.onmessage = (msg) => {
+figma.ui.onmessage = async (msg) => {
   if (!msg || typeof msg !== "object") return;
+
+  if (msg.type === "GET_SETTINGS") {
+    try {
+      const settings = await figma.clientStorage.getAsync(SETTINGS_STORAGE_KEY);
+      figma.ui.postMessage({
+        type: "SETTINGS_LOADED",
+        settings: settings && typeof settings === "object" ? settings : {},
+      });
+    } catch (error) {
+      const message = normalizeErrorMessage(error);
+      postUiLog(`Не удалось прочитать настройки: ${message}`, "error");
+      figma.ui.postMessage({ type: "SETTINGS_LOAD_FAILED", message });
+    }
+    return;
+  }
+
+  if (msg.type === "SAVE_SETTINGS") {
+    try {
+      const settings = msg.settings && typeof msg.settings === "object" ? msg.settings : {};
+      await figma.clientStorage.setAsync(SETTINGS_STORAGE_KEY, settings);
+      figma.ui.postMessage({ type: "SETTINGS_SAVED" });
+    } catch (error) {
+      const message = normalizeErrorMessage(error);
+      postUiLog(`Не удалось сохранить настройки: ${message}`, "error");
+      figma.ui.postMessage({ type: "SETTINGS_SAVE_FAILED", message });
+    }
+    return;
+  }
 
   if (msg.type === "RETRY_EXPORT") {
     postUiLog("Повторный запуск экспорта");
@@ -401,7 +430,7 @@ figma.ui.onmessage = (msg) => {
   }
 
   if (msg.type === "EXPORT_DONE") {
-    postUiLog("UI сообщил об успешной сборке ZIP");
+    postUiLog("UI сообщил об успешной синхронизации файлов");
     return;
   }
 
