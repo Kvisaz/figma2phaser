@@ -15,6 +15,8 @@ const ASSETS_CORE_FRAME_NAME = "assets-core";
 const ASSETS_CORE_FRAME_WIDTH = 1920;
 const ASSETS_CORE_FRAME_HEIGHT = 3600;
 const ASSETS_CORE_FRAME_OFFSET_X = 200;
+const ASSETS_COLLECTION_MARGIN = 40;
+const ASSETS_COLLECTION_GAP = 40;
 
 /**
  * Настройки экспорта PNG для каждого верхнего ребенка.
@@ -192,23 +194,44 @@ function formatScanEntryLines(entries) {
 
 /**
  * ============================================================================
- * Assets Frame Creation
+ * Assets Collection
  * ============================================================================
  *
- * Creates the default assets-core frame only when the current page has no
- * existing frame with a name starting from "assets".
+ * Collects non-view children from top-level view* trees and copies them into an
+ * assets* frame without changing the original view hierarchy.
  */
 
 /**
- * Создает фрейм assets-core, если на странице еще нет assets* фреймов.
+ * Собирает ассеты из top-level view* деревьев в assets-frame.
  */
-function createAssetsCoreFrameIfMissing() {
-  const scan = getCurrentPageScanDiagnostic();
-  if (scan.hasAssetsFrames) {
+function collectAssetsFromViewTrees() {
+  const assetsFrameResult = getOrCreateAssetsFrame();
+  const viewRoots = getTopLevelViewNodes();
+  const sourceNodes = collectAssetSourceNodesFromViewRoots(viewRoots);
+  const copiedNodes = copyAssetSourceNodesIntoAssetsFrame(sourceNodes, assetsFrameResult.frame);
+
+  figma.currentPage.selection = [assetsFrameResult.frame];
+  figma.viewport.scrollAndZoomIntoView([assetsFrameResult.frame]);
+
+  return {
+    assetsFrameCreated: assetsFrameResult.created,
+    assetsFrameName: assetsFrameResult.frame.name,
+    assetsFrameId: assetsFrameResult.frame.id,
+    viewRootsCount: viewRoots.length,
+    sourceNodesCount: sourceNodes.length,
+    copiedNodesCount: copiedNodes.length,
+  };
+}
+
+/**
+ * Возвращает существующий assets* фрейм или создает assets-core.
+ */
+function getOrCreateAssetsFrame() {
+  const existingFrame = findFirstAssetsFrameOnCurrentPage();
+  if (existingFrame) {
     return {
       created: false,
-      reason: "assets-frame-exists",
-      scan,
+      frame: existingFrame,
     };
   }
 
@@ -226,15 +249,18 @@ function createAssetsCoreFrameIfMissing() {
   }
 
   figma.currentPage.appendChild(frame);
-  figma.currentPage.selection = [frame];
-  figma.viewport.scrollAndZoomIntoView([frame]);
 
   return {
     created: true,
-    frameName: frame.name,
-    frameId: frame.id,
-    scan: getCurrentPageScanDiagnostic(),
+    frame,
   };
+}
+
+/**
+ * Находит первый top-level FRAME с именем assets* на текущей странице.
+ */
+function findFirstAssetsFrameOnCurrentPage() {
+  return figma.currentPage.children.find((node) => isAssetsFrameNode(node)) || null;
 }
 
 /**
@@ -251,6 +277,167 @@ function findLastFrameOnCurrentPage() {
     if (frameRight === lastRight && frame.y > lastFrame.y) return frame;
     return lastFrame;
   }, frames[0]);
+}
+
+/**
+ * Возвращает первые найденные view* узлы на странице, исключая assets* фреймы.
+ */
+function getTopLevelViewNodes() {
+  const result = [];
+
+  figma.currentPage.children.forEach((node) => {
+    collectTopLevelViewNodesFromSubtree(node, result);
+  });
+
+  return result;
+}
+
+/**
+ * Ищет view* корни внутри top-level поддерева страницы.
+ */
+function collectTopLevelViewNodesFromSubtree(node, result) {
+  if (isAssetsFrameNode(node)) return;
+
+  if (isViewNamedNode(node)) {
+    result.push(node);
+    return;
+  }
+
+  if (!hasChildren(node)) return;
+
+  node.children.forEach((child) => {
+    collectTopLevelViewNodesFromSubtree(child, result);
+  });
+}
+
+/**
+ * Собирает все non-view узлы из view* деревьев по правилу верхнего уровня.
+ */
+function collectAssetSourceNodesFromViewRoots(viewRoots) {
+  const result = [];
+
+  viewRoots.forEach((viewRoot) => {
+    collectAssetSourceNodesFromViewNode(viewRoot, result);
+  });
+
+  return result;
+}
+
+/**
+ * Исследует только top-level детей view-узла и углубляется только в view* детей.
+ */
+function collectAssetSourceNodesFromViewNode(viewNode, result) {
+  if (!hasChildren(viewNode)) return;
+
+  viewNode.children.forEach((child) => {
+    if (isViewNamedNode(child)) {
+      collectAssetSourceNodesFromViewNode(child, result);
+      return;
+    }
+
+    result.push(child);
+  });
+}
+
+/**
+ * Копирует найденные source nodes в assets-frame на свободные места.
+ */
+function copyAssetSourceNodesIntoAssetsFrame(sourceNodes, assetsFrame) {
+  const layoutState = createAssetsFrameLayoutState(assetsFrame);
+  const copiedNodes = [];
+
+  sourceNodes.forEach((sourceNode) => {
+    const clone = sourceNode.clone();
+    const sourceSize = readNodeSize(sourceNode);
+    const position = getNextAssetsFramePosition(layoutState, sourceSize);
+
+    assetsFrame.appendChild(clone);
+    clone.x = position.x;
+    clone.y = position.y;
+    copiedNodes.push(clone);
+  });
+
+  resizeAssetsFrameToFitLayout(assetsFrame, layoutState);
+  return copiedNodes;
+}
+
+/**
+ * Создает состояние раскладки для поиска следующего свободного места.
+ */
+function createAssetsFrameLayoutState(assetsFrame) {
+  const existingBottom = getAssetsFrameExistingChildrenBottom(assetsFrame);
+  return {
+    frameWidth: assetsFrame.width,
+    cursorX: ASSETS_COLLECTION_MARGIN,
+    cursorY: existingBottom > 0
+      ? existingBottom + ASSETS_COLLECTION_GAP
+      : ASSETS_COLLECTION_MARGIN,
+    rowHeight: 0,
+  };
+}
+
+/**
+ * Возвращает нижнюю границу уже существующих детей assets-frame.
+ */
+function getAssetsFrameExistingChildrenBottom(assetsFrame) {
+  if (!hasChildren(assetsFrame) || assetsFrame.children.length === 0) return 0;
+
+  return assetsFrame.children.reduce((bottom, child) => {
+    const size = readNodeSize(child);
+    return Math.max(bottom, child.y + size.height);
+  }, 0);
+}
+
+/**
+ * Возвращает следующую позицию в assets-frame с переносом строк.
+ */
+function getNextAssetsFramePosition(layoutState, size) {
+  const width = size.width;
+  const height = size.height;
+  const maxRight = layoutState.frameWidth - ASSETS_COLLECTION_MARGIN;
+
+  if (layoutState.cursorX > ASSETS_COLLECTION_MARGIN && layoutState.cursorX + width > maxRight) {
+    layoutState.cursorX = ASSETS_COLLECTION_MARGIN;
+    layoutState.cursorY += layoutState.rowHeight + ASSETS_COLLECTION_GAP;
+    layoutState.rowHeight = 0;
+  }
+
+  const position = {
+    x: layoutState.cursorX,
+    y: layoutState.cursorY,
+  };
+
+  layoutState.cursorX += width + ASSETS_COLLECTION_GAP;
+  layoutState.rowHeight = Math.max(layoutState.rowHeight, height);
+
+  return position;
+}
+
+/**
+ * Увеличивает assets-frame по высоте, если новые копии вышли за текущий размер.
+ */
+function resizeAssetsFrameToFitLayout(assetsFrame, layoutState) {
+  const requiredHeight = layoutState.cursorY + layoutState.rowHeight + ASSETS_COLLECTION_MARGIN;
+  if (requiredHeight <= assetsFrame.height) return;
+  assetsFrame.resize(assetsFrame.width, requiredHeight);
+}
+
+/**
+ * Читает размер узла для раскладки внутри assets-frame.
+ */
+function readNodeSize(node) {
+  if (typeof node.width === "number" && typeof node.height === "number") {
+    return {
+      width: Math.max(1, node.width),
+      height: Math.max(1, node.height),
+    };
+  }
+
+  const bounds = readExportBounds(node);
+  return {
+    width: Math.max(1, bounds ? bounds.width : 100),
+    height: Math.max(1, bounds ? bounds.height : 100),
+  };
 }
 
 /**
@@ -695,27 +882,21 @@ figma.ui.onmessage = async (msg) => {
     return;
   }
 
-  if (msg.type === "CREATE_ASSETS_FRAME") {
+  if (msg.type === "COLLECT_ASSETS" || msg.type === "CREATE_ASSETS_FRAME") {
     try {
-      const result = createAssetsCoreFrameIfMissing();
-      if (result.created) {
-        postUiLog(`Создан фрейм "${result.frameName}" ${ASSETS_CORE_FRAME_WIDTH}x${ASSETS_CORE_FRAME_HEIGHT}`);
-        figma.ui.postMessage({
-          type: "ASSETS_FRAME_CREATED",
-          frameName: result.frameName,
-          frameId: result.frameId,
-        });
-      } else {
-        postUiLog("Фрейм assets* уже существует. Создание assets-core пропущено.", "warn");
-        figma.ui.postMessage({
-          type: "ASSETS_FRAME_ALREADY_EXISTS",
-        });
-      }
+      const result = collectAssetsFromViewTrees();
+      postUiLog(
+        `Ассеты собраны: view* корней ${result.viewRootsCount}, найдено ${result.sourceNodesCount}, скопировано ${result.copiedNodesCount} в "${result.assetsFrameName}"`
+      );
+      figma.ui.postMessage({
+        type: "ASSETS_COLLECTION_DONE",
+        result,
+      });
       postPageState();
     } catch (error) {
       const message = normalizeErrorMessage(error);
-      postUiLog(`Не удалось создать assets-core: ${message}`, "error");
-      figma.ui.postMessage({ type: "ASSETS_FRAME_CREATE_FAILED", message });
+      postUiLog(`Не удалось собрать ассеты: ${message}`, "error");
+      figma.ui.postMessage({ type: "ASSETS_COLLECTION_FAILED", message });
     }
     return;
   }

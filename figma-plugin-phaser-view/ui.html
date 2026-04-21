@@ -312,11 +312,16 @@
       exportButton.disabled = isExporting || !isServerAvailable || !hasOutputPaths;
     }
 
+    /**
+     * Keeps the assets button available for manual collection.
+     */
     function updateAssetsButtonState() {
-      const scan = latestPageState && latestPageState.scan;
-      assetsButton.disabled = Boolean(!scan || scan.hasAssetsFrames || isExporting);
+      assetsButton.disabled = false;
     }
 
+    /**
+     * Formats scan entries for the log.
+     */
     function formatScanEntryLines(entries) {
       if (!entries || entries.length === 0) {
         return ["- не найдено"];
@@ -325,6 +330,9 @@
       return entries.map((entry) => `- [${entry.type}] ${entry.path} (${entry.nodeId})`);
     }
 
+    /**
+     * Formats current page scan diagnostic for the UI log.
+     */
     function formatPageScanDiagnostic(scan) {
       if (!scan) return "Скан страницы недоступен";
       return [
@@ -336,6 +344,9 @@
       ].join("\n");
     }
 
+    /**
+     * Renders unified page state received from the plugin main thread.
+     */
     function handlePageState(pageState) {
       latestPageState = pageState || null;
       latestSelectionDiagnostic = latestPageState && latestPageState.selection;
@@ -488,17 +499,12 @@
       postToPlugin({ type: "EXPORT_TO_PROJECT" });
     }
 
+    /**
+     * Starts assets collection from view* trees.
+     */
     function createAssetsFrame() {
-      const scan = latestPageState && latestPageState.scan;
-      if (!scan || scan.hasAssetsFrames) {
-        appendLog("Создание assets-core недоступно: assets* фрейм уже найден", "warn");
-        updateAssetsButtonState();
-        return;
-      }
-
-      assetsButton.disabled = true;
-      appendLog("Создание фрейма assets-core");
-      postToPlugin({ type: "CREATE_ASSETS_FRAME" });
+      appendLog("Сбор ассетов из view* деревьев");
+      postToPlugin({ type: "COLLECT_ASSETS" });
     }
 
     window.onmessage = (event) => {
@@ -548,6 +554,20 @@
 
       if (msg.type === "ASSETS_FRAME_CREATE_FAILED") {
         appendLog(msg.message || "Не удалось создать assets-core", "error");
+        updateAssetsButtonState();
+        return;
+      }
+
+      if (msg.type === "ASSETS_COLLECTION_DONE") {
+        const result = msg.result || {};
+        appendLog(
+          `Ассеты собраны: view* корней ${result.viewRootsCount || 0}, найдено ${result.sourceNodesCount || 0}, скопировано ${result.copiedNodesCount || 0}`
+        );
+        return;
+      }
+
+      if (msg.type === "ASSETS_COLLECTION_FAILED") {
+        appendLog(msg.message || "Не удалось собрать ассеты", "error");
         updateAssetsButtonState();
         return;
       }
