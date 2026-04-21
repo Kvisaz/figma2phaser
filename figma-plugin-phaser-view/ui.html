@@ -167,7 +167,7 @@
   <div class="settingsGrid">
     <label>
       packName
-      <input id="packNameInput" type="text" placeholder="assets-chibi-core-full" />
+      <input id="packNameInput" type="text" placeholder="assets-core" readonly />
     </label>
 
     <label>
@@ -281,7 +281,6 @@
     function collectSettingsFromUi() {
       settings = {
         ...settings,
-        packName: slugify(packNameInput.value || settings.packName || "pack"),
         atlasBasePath: normalizeAtlasBasePath(atlasBasePathInput.value),
         serverUrl: normalizeServerUrl(serverUrlInput.value),
         atlasOutputDir: normalizeDirectoryPath(settings.atlasOutputDir),
@@ -289,6 +288,19 @@
       };
       renderSettings();
       return settings;
+    }
+
+    /**
+     * Builds the only settings that are allowed to be persisted.
+     */
+    function getPersistedSettings() {
+      const nextSettings = collectSettingsFromUi();
+      return {
+        atlasBasePath: nextSettings.atlasBasePath,
+        serverUrl: nextSettings.serverUrl,
+        atlasOutputDir: nextSettings.atlasOutputDir,
+        tsOutputDir: nextSettings.tsOutputDir,
+      };
     }
 
     function renderPathValue(itemNode, valueNode, pathValue, emptyText) {
@@ -305,6 +317,17 @@
       renderPathValue(tsOutputDirItem, tsOutputDirValue, settings.tsOutputDir, "Путь TS не задан");
       updateExportButtonState();
       updateAssetsButtonState();
+    }
+
+    /**
+     * Removes stale stored fields that are derived from the current Figma page.
+     */
+    function normalizeLoadedSettings(loadedSettings) {
+      const normalized = {
+        ...(loadedSettings || {}),
+      };
+      delete normalized.packName;
+      return normalized;
     }
 
     function updateExportButtonState() {
@@ -352,6 +375,8 @@
       latestSelectionDiagnostic = latestPageState && latestPageState.selection;
 
       if (latestPageState && latestPageState.scan) {
+        settings.packName = latestPageState.scan.assetsPackName || "";
+        renderSettings();
         appendLog(formatPageScanDiagnostic(latestPageState.scan));
       }
 
@@ -365,7 +390,7 @@
     function savePluginSettings() {
       postToPlugin({
         type: "SAVE_SETTINGS",
-        settings: collectSettingsFromUi(),
+        settings: getPersistedSettings(),
       });
     }
 
@@ -440,6 +465,9 @@
 
     async function exportPayloadToServer(exportPayload) {
       const nextSettings = collectSettingsFromUi();
+      const packName = slugify(exportPayload.packName || "pack");
+      settings.packName = packName;
+      renderSettings();
       await saveServerSettings();
       appendLog(`Отправка в server: ${nextSettings.serverUrl}/api/figma/export`);
 
@@ -448,13 +476,13 @@
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            packName: nextSettings.packName,
+            packName,
             atlasBasePath: nextSettings.atlasBasePath,
             atlasOutputDir: nextSettings.atlasOutputDir,
             tsOutputDir: nextSettings.tsOutputDir,
             manifest: {
               ...exportPayload.manifest,
-              packName: nextSettings.packName,
+              packName,
             },
             files: exportPayload.files.map((file) => ({
               fileName: file.fileName,
@@ -514,7 +542,7 @@
       if (msg.type === "SETTINGS_LOADED") {
         settings = {
           ...settings,
-          ...(msg.settings || {}),
+          ...normalizeLoadedSettings(msg.settings),
         };
         renderSettings();
         appendLog("Настройки Figma загружены");
@@ -581,7 +609,7 @@
       }
 
       if (msg.type === "EXPORT_READY") {
-        const packName = slugify(settings.packName || msg.packName || "pack");
+        const packName = slugify(msg.packName || "pack");
         settings.packName = packName;
         renderSettings();
         appendLog(`PNG экспорт готов: ${msg.files.length} файлов`);
@@ -619,7 +647,7 @@
     exportButton.addEventListener("click", startExport);
     assetsButton.addEventListener("click", createAssetsFrame);
 
-    [packNameInput, atlasBasePathInput, serverUrlInput].forEach((input) => {
+    [atlasBasePathInput, serverUrlInput].forEach((input) => {
       input.addEventListener("change", () => {
         collectSettingsFromUi();
         savePluginSettings();

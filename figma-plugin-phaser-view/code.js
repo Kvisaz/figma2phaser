@@ -90,10 +90,14 @@ function getCurrentPageScanDiagnostic() {
     assetsFrames: [],
     scannedNodesCount: 0,
     hasAssetsFrames: false,
+    assetsPackName: "",
   };
 
   scanPageChildren(page.children, result);
   result.hasAssetsFrames = result.assetsFrames.length > 0;
+  result.assetsPackName = result.assetsFrames.length > 0
+    ? slugify(result.assetsFrames[0].name || ASSETS_CORE_FRAME_NAME)
+    : "";
   return result;
 }
 
@@ -453,7 +457,7 @@ async function runExportFromSelection() {
     throw new Error("У выбранного узла нет верхних детей для экспорта");
   }
 
-  const packName = slugify(root.name || "pack");
+  const packName = getAssetsFramePackName();
   const unsafeNameWarnings = collectUnsafeNameWarnings({
     root,
     children: topChildren,
@@ -555,6 +559,18 @@ async function runExportFromSelection() {
   });
 
   postUiLog(`Экспорт завершен: ${files.length} PNG + manifest.json`);
+}
+
+/**
+ * Возвращает безопасный packName из имени первого assets* фрейма на странице.
+ */
+function getAssetsFramePackName() {
+  const assetsFrame = findFirstAssetsFrameOnCurrentPage();
+  if (!assetsFrame) {
+    throw new Error('На текущей странице не найден frame с именем "assets*" для packName');
+  }
+
+  return slugify(assetsFrame.name || ASSETS_CORE_FRAME_NAME);
 }
 
 /**

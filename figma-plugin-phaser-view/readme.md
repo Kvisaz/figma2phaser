@@ -98,6 +98,39 @@ button.primary.nine.20
 
 ---
 
+## Assets frame и кнопка `Ассеты`
+
+На текущей странице должен быть top-level `FRAME`, имя которого начинается с:
+
+```text
+assets
+```
+
+Пример:
+
+```text
+assets-core
+```
+
+Кнопка `Ассеты`:
+
+- всегда активна;
+- ищет первый top-level `FRAME` с именем `assets*`;
+- если такой frame найден, складывает копии в него;
+- если такого frame нет, создает `assets-core` размером `1920x3600`;
+- собирает ассеты из `view*` деревьев на текущей странице.
+
+Правило сбора:
+
+- плагин ищет `view*` узлы на текущей странице, не заходя внутрь `assets*` frame;
+- внутри каждого `view*` смотрит только детей верхнего уровня;
+- если ребенок тоже начинается с `view`, он исследуется таким же образом;
+- если ребенок не начинается с `view`, он копируется в `assets*` frame на свободное место.
+
+Важно: `assets*` frame должен лежать на верхнем уровне страницы. Вложенный `assets*` frame сейчас не используется как целевой контейнер.
+
+---
+
 ## Формат manifest
 
 Пример:
@@ -168,14 +201,24 @@ manifest.warnings.unsafeNames
 [tsOutputDir]/utils.ts
 ```
 
-`packName` по умолчанию берется из имени выбранного корневого узла, но его можно изменить в UI плагина.
+`packName` берется из имени первого top-level `assets*` frame на текущей странице и проходит безопасную `slugify`-обработку.
+
+Пример:
+
+```text
+assets-core -> assets-core
+Assets Core -> assets-core
+assets/chibi core -> assets-chibi-core
+```
+
+Поле `packName` в UI read-only. Его нельзя задавать вручную, чтобы не перезаписать файлы другого документа старым сохраненным значением.
 
 ---
 
 ## Настройки
 
 - `serverUrl` - адрес companion server, по умолчанию `http://localhost:3456`;
-- `packName` - имя atlas pack;
+- `packName` - read-only имя atlas pack из первого top-level `assets*` frame;
 - `atlasBasePath` - runtime URL для Phaser preload, например `./assets/atlases/`;
 - `atlasOutputDir` - абсолютная папка на диске для atlas `.png/.json`;
 - `tsOutputDir` - абсолютная папка на диске для `.ts` файлов.
@@ -186,7 +229,7 @@ manifest.warnings.unsafeNames
 - `atlasOutputDir` - filesystem path, куда сервер пишет atlas.
 - `tsOutputDir` - filesystem path, куда сервер пишет TypeScript.
 
-`packName`, `atlasBasePath` и `serverUrl` задаются в Figma plugin.
+`atlasBasePath` и `serverUrl` задаются в Figma plugin.
 
 `atlasOutputDir` и `tsOutputDir` задаются на главной странице server:
 
@@ -286,8 +329,9 @@ http://localhost:3456/
 4. В Figma выберите ровно один корневой UI-узел.
 5. Запустите plugin.
 6. Plugin только выполнит диагностику: загрузит настройки, проверит server и selection, выведет лог.
-7. Проверьте `packName`, `atlasBasePath`, `serverUrl`.
-8. Нажмите `Экспорт`.
+7. Проверьте `atlasBasePath` и `serverUrl`.
+8. Убедитесь, что на странице есть top-level `assets*` frame. Если его нет, нажмите `Ассеты`.
+9. Нажмите `Экспорт`.
 
 После этого server перезапишет atlas и TS-файлы в указанных папках.
 
