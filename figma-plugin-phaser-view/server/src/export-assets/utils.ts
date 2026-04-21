@@ -56,7 +56,7 @@ export function addAssetNine(props: IAddAssetNineProps): Phaser.GameObjects.Nine
       asset.frameName,
       targetWidth,
       targetHeight,
-      padding,
+      padding,padding,padding,padding,
   );
 
   return setLeftTop(nineSliceNode, targetX, targetY);
