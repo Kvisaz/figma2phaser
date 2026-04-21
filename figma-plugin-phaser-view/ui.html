@@ -440,6 +440,7 @@
         renderSettings();
         appendLog("Настройки Figma загружены");
         fetchServerSettings();
+        postToPlugin({ type: "GET_CURRENT_PAGE_SCAN_DIAGNOSTIC" });
         postToPlugin({ type: "GET_SELECTION_DIAGNOSTIC" });
         return;
       }

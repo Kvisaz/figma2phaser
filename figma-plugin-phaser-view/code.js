@@ -33,7 +33,136 @@ figma.showUI(__html__, {
   themeColors: true,
 });
 
+const startupCurrentPageScanDiagnostic = getCurrentPageScanDiagnostic();
+
 postSelectionDiagnostic();
+
+/**
+ * ============================================================================
+ * Current Page Scan
+ * ============================================================================
+ *
+ * Startup-only diagnostics for finding Figma nodes that can become export roots
+ * or asset sources. This block does not affect export behavior.
+ */
+
+/**
+ * Сканирует текущую страницу и отправляет результат в UI-лог.
+ */
+function postCurrentPageScanDiagnostic() {
+  postUiLog(formatCurrentPageScanDiagnostic(startupCurrentPageScanDiagnostic));
+}
+
+/**
+ * Собирает диагностические списки по текущей странице Figma.
+ */
+function getCurrentPageScanDiagnostic() {
+  const page = figma.currentPage;
+  const result = {
+    pageName: page.name || page.id,
+    viewNodes: [],
+    assetsFrames: [],
+    scannedNodesCount: 0,
+  };
+
+  scanPageChildren(page.children, result);
+  return result;
+}
+
+/**
+ * Рекурсивно обходит детей страницы и накапливает найденные узлы.
+ */
+function scanPageChildren(nodes, result) {
+  nodes.forEach((node) => {
+    result.scannedNodesCount += 1;
+
+    if (isViewNamedNode(node)) {
+      result.viewNodes.push(createScanEntry(node));
+    }
+
+    if (isAssetsFrameNode(node)) {
+      result.assetsFrames.push(createScanEntry(node));
+    }
+
+    if (hasChildren(node)) {
+      scanPageChildren(node.children, result);
+    }
+  });
+}
+
+/**
+ * Проверяет, начинается ли имя любого объекта с "view".
+ */
+function isViewNamedNode(node) {
+  return startsWithIgnoreCase(node && node.name, "view");
+}
+
+/**
+ * Проверяет, является ли узел фреймом с именем, начинающимся с "assets".
+ */
+function isAssetsFrameNode(node) {
+  return node && node.type === "FRAME" && startsWithIgnoreCase(node.name, "assets");
+}
+
+/**
+ * Проверяет prefix без учета регистра.
+ */
+function startsWithIgnoreCase(input, prefix) {
+  return String(input || "").toLowerCase().startsWith(String(prefix || "").toLowerCase());
+}
+
+/**
+ * Создает компактную запись для диагностического лога.
+ */
+function createScanEntry(node) {
+  return {
+    nodeId: node.id,
+    type: node.type,
+    name: node.name || node.id,
+    path: getNodePath(node),
+  };
+}
+
+/**
+ * Собирает путь узла по именам родителей до текущей страницы.
+ */
+function getNodePath(node) {
+  const names = [];
+  let current = node;
+
+  while (current && current.type !== "PAGE") {
+    names.unshift(current.name || current.id);
+    current = current.parent;
+  }
+
+  return names.join(" / ");
+}
+
+/**
+ * Формирует текст отчета сканирования текущей страницы.
+ */
+function formatCurrentPageScanDiagnostic(diagnostic) {
+  const lines = [
+    `Скан страницы "${diagnostic.pageName}": просмотрено узлов ${diagnostic.scannedNodesCount}`,
+    `Объекты view*: ${diagnostic.viewNodes.length}`,
+    ...formatScanEntryLines(diagnostic.viewNodes),
+    `Фреймы assets*: ${diagnostic.assetsFrames.length}`,
+    ...formatScanEntryLines(diagnostic.assetsFrames),
+  ];
+
+  return lines.join("\n");
+}
+
+/**
+ * Формирует строки найденных узлов для лога.
+ */
+function formatScanEntryLines(entries) {
+  if (entries.length === 0) {
+    return ["- не найдено"];
+  }
+
+  return entries.map((entry) => `- [${entry.type}] ${entry.path} (${entry.nodeId})`);
+}
 
 /**
  * Главный сценарий экспорта для одного выделенного корневого узла.
@@ -464,6 +593,11 @@ figma.ui.onmessage = async (msg) => {
 
   if (msg.type === "GET_SELECTION_DIAGNOSTIC") {
     postSelectionDiagnostic();
+    return;
+  }
+
+  if (msg.type === "GET_CURRENT_PAGE_SCAN_DIAGNOSTIC") {
+    postCurrentPageScanDiagnostic();
     return;
   }
 
