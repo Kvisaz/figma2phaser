@@ -1,6 +1,7 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
+const { execFile } = require("child_process");
 const { packAsync } = require("free-tex-packer-core");
 
 const PORT = 3456;
@@ -40,6 +41,13 @@ function sendJson(response, statusCode, payload) {
     response.end(body);
 }
 
+function sendHtml(response, statusCode, html) {
+    response.writeHead(statusCode, {
+        "Content-Type": "text/html; charset=utf-8",
+    });
+    response.end(html);
+}
+
 function ensureDirectoryExists(directoryPath) {
     fs.mkdirSync(directoryPath, { recursive: true });
 }
@@ -52,6 +60,239 @@ function writeTextFile(filePath, content) {
 function writeBinaryFile(filePath, buffer) {
     ensureDirectoryExists(path.dirname(filePath));
     fs.writeFileSync(filePath, buffer);
+}
+
+function escapeHtml(input) {
+    return String(input || "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+}
+
+function createSettingsPageHtml() {
+    const settings = readSettings();
+    return `<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Figma Phaser Export Server</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f4f1ea;
+      color: #211f1a;
+    }
+
+    body {
+      margin: 0;
+      padding: 32px;
+    }
+
+    main {
+      max-width: 880px;
+      margin: 0 auto;
+      display: grid;
+      gap: 18px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 28px;
+      letter-spacing: -0.03em;
+    }
+
+    .card {
+      border: 1px solid #d6cfc1;
+      border-radius: 18px;
+      padding: 18px;
+      background: #fffaf0;
+      box-shadow: 0 18px 50px rgb(62 47 26 / 10%);
+    }
+
+    .grid {
+      display: grid;
+      gap: 14px;
+    }
+
+    label {
+      display: grid;
+      gap: 7px;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .pathRow {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+    }
+
+    input {
+      min-width: 0;
+      border: 1px solid #c8beac;
+      border-radius: 12px;
+      padding: 11px 12px;
+      background: #fff;
+      color: #211f1a;
+      font: inherit;
+    }
+
+    button {
+      border: 0;
+      border-radius: 12px;
+      padding: 11px 14px;
+      background: #1d5f43;
+      color: #fff;
+      font: inherit;
+      font-weight: 800;
+      cursor: pointer;
+    }
+
+    button.secondary {
+      background: #31291f;
+    }
+
+    button:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
+
+    .status {
+      display: inline-flex;
+      width: fit-content;
+      border-radius: 999px;
+      padding: 7px 11px;
+      background: #dff2d8;
+      color: #1d5f43;
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    #log {
+      min-height: 150px;
+      max-height: 260px;
+      overflow: auto;
+      white-space: pre-wrap;
+      border-radius: 14px;
+      padding: 14px;
+      background: #211f1a;
+      color: #f7eedc;
+      font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Figma Phaser Export Server</h1>
+      <p class="status">Server running on http://localhost:${PORT}</p>
+    </header>
+
+    <section class="card grid">
+      <label>
+        Atlas output folder
+        <div class="pathRow">
+          <input id="atlasOutputDir" value="${escapeHtml(settings.atlasOutputDir)}" />
+          <button id="chooseAtlas" type="button">Выбрать папку</button>
+        </div>
+      </label>
+
+      <label>
+        TypeScript output folder
+        <div class="pathRow">
+          <input id="tsOutputDir" value="${escapeHtml(settings.tsOutputDir)}" />
+          <button id="chooseTs" type="button">Выбрать папку</button>
+        </div>
+      </label>
+
+      <div>
+        <button id="saveSettings" type="button" class="secondary">Сохранить</button>
+        <button id="validateSettings" type="button">Проверить папки</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <div id="log">Ready.</div>
+    </section>
+  </main>
+
+  <script>
+    const atlasInput = document.getElementById("atlasOutputDir");
+    const tsInput = document.getElementById("tsOutputDir");
+    const logNode = document.getElementById("log");
+
+    function log(message) {
+      const time = new Date().toLocaleTimeString();
+      logNode.textContent += "\\n[" + time + "] " + message;
+      logNode.scrollTop = logNode.scrollHeight;
+    }
+
+    async function requestJson(url, options) {
+      const response = await fetch(url, options);
+      const text = await response.text();
+      const payload = text ? JSON.parse(text) : null;
+      if (!response.ok || !payload || payload.ok === false) {
+        throw new Error(payload && payload.error ? payload.error : text || "HTTP " + response.status);
+      }
+      return payload;
+    }
+
+    async function saveSettings() {
+      const payload = await requestJson("/api/server/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          atlasOutputDir: atlasInput.value,
+          tsOutputDir: tsInput.value,
+        }),
+      });
+      atlasInput.value = payload.settings.atlasOutputDir;
+      tsInput.value = payload.settings.tsOutputDir;
+      log("Settings saved.");
+    }
+
+    async function chooseDirectory(kind) {
+      const payload = await requestJson("/api/server/choose-directory", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind }),
+      });
+      atlasInput.value = payload.settings.atlasOutputDir;
+      tsInput.value = payload.settings.tsOutputDir;
+      log((kind === "atlas" ? "Atlas" : "TS") + " folder: " + payload.directory);
+    }
+
+    async function validateSettings() {
+      const payload = await requestJson("/api/server/validate-settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          atlasOutputDir: atlasInput.value,
+          tsOutputDir: tsInput.value,
+        }),
+      });
+      log(JSON.stringify(payload.checks, null, 2));
+    }
+
+    document.getElementById("saveSettings").addEventListener("click", () => {
+      saveSettings().catch((error) => log("ERROR: " + error.message));
+    });
+    document.getElementById("validateSettings").addEventListener("click", () => {
+      validateSettings().catch((error) => log("ERROR: " + error.message));
+    });
+    document.getElementById("chooseAtlas").addEventListener("click", () => {
+      chooseDirectory("atlas").catch((error) => log("ERROR: " + error.message));
+    });
+    document.getElementById("chooseTs").addEventListener("click", () => {
+      chooseDirectory("ts").catch((error) => log("ERROR: " + error.message));
+    });
+  </script>
+</body>
+</html>`;
 }
 
 function readSettings() {
@@ -95,6 +336,49 @@ function normalizeOutputDirectory(input) {
     const value = String(input || "").trim();
     if (!value) return "";
     return path.resolve(value);
+}
+
+function chooseDirectoryWithMacDialog(promptText) {
+    return new Promise((resolve, reject) => {
+        execFile("osascript", [
+            "-e",
+            `POSIX path of (choose folder with prompt ${JSON.stringify(promptText)})`,
+        ], (error, stdout, stderr) => {
+            if (error) {
+                reject(new Error(stderr.trim() || error.message));
+                return;
+            }
+
+            resolve(normalizeOutputDirectory(stdout.trim()));
+        });
+    });
+}
+
+function validateDirectoryPath(directoryPath) {
+    const normalized = normalizeOutputDirectory(directoryPath);
+
+    if (!normalized) {
+        return {
+            ok: false,
+            path: "",
+            error: "Path is empty",
+        };
+    }
+
+    try {
+        ensureDirectoryExists(normalized);
+        fs.accessSync(normalized, fs.constants.W_OK);
+        return {
+            ok: true,
+            path: normalized,
+        };
+    } catch (error) {
+        return {
+            ok: false,
+            path: normalized,
+            error: error instanceof Error ? error.message : String(error),
+        };
+    }
 }
 
 function sanitizePackName(input) {
@@ -509,8 +793,65 @@ async function handleSettingsRequest(request, response) {
     });
 }
 
+async function handleChooseDirectoryRequest(request, response) {
+    if (request.method !== "POST") {
+        sendJson(response, 405, {
+            ok: false,
+            error: `Method not allowed: ${request.method}`,
+        });
+        return;
+    }
+
+    const payload = await readJsonBody(request);
+    const kind = String(payload.kind || "").trim();
+
+    if (kind !== "atlas" && kind !== "ts") {
+        throw new Error('Directory kind must be "atlas" or "ts"');
+    }
+
+    const directory = await chooseDirectoryWithMacDialog(
+        kind === "atlas" ? "Select atlas output folder" : "Select TypeScript output folder"
+    );
+    const settings = writeSettings({
+        [kind === "atlas" ? "atlasOutputDir" : "tsOutputDir"]: directory,
+    });
+
+    sendJson(response, 200, {
+        ok: true,
+        kind,
+        directory,
+        settings,
+    });
+}
+
+async function handleValidateSettingsRequest(request, response) {
+    if (request.method !== "POST") {
+        sendJson(response, 405, {
+            ok: false,
+            error: `Method not allowed: ${request.method}`,
+        });
+        return;
+    }
+
+    const payload = await readJsonBody(request);
+    const settings = writeSettings(payload);
+    const checks = {
+        atlasOutputDir: validateDirectoryPath(settings.atlasOutputDir),
+        tsOutputDir: validateDirectoryPath(settings.tsOutputDir),
+    };
+    const ok = checks.atlasOutputDir.ok && checks.tsOutputDir.ok;
+
+    sendJson(response, ok ? 200 : 400, {
+        ok,
+        settings,
+        checks,
+    });
+}
+
 const server = http.createServer(async (request, response) => {
     try {
+        const url = new URL(request.url || "/", `http://localhost:${PORT}`);
+
         if (request.method === "OPTIONS") {
             response.writeHead(204, {
                 "Access-Control-Allow-Origin": "*",
@@ -521,7 +862,12 @@ const server = http.createServer(async (request, response) => {
             return;
         }
 
-        if (request.method === "GET" && request.url === "/health") {
+        if (request.method === "GET" && url.pathname === "/") {
+            sendHtml(response, 200, createSettingsPageHtml());
+            return;
+        }
+
+        if (request.method === "GET" && url.pathname === "/api/server/health") {
             const settings = readSettings();
             sendJson(response, 200, {
                 ok: true,
@@ -533,19 +879,29 @@ const server = http.createServer(async (request, response) => {
             return;
         }
 
-        if ((request.method === "GET" || request.method === "POST") && request.url === "/settings") {
+        if ((request.method === "GET" || request.method === "POST") && url.pathname === "/api/server/settings") {
             await handleSettingsRequest(request, response);
             return;
         }
 
-        if (request.method === "POST" && request.url === "/export") {
+        if (url.pathname === "/api/server/choose-directory") {
+            await handleChooseDirectoryRequest(request, response);
+            return;
+        }
+
+        if (url.pathname === "/api/server/validate-settings") {
+            await handleValidateSettingsRequest(request, response);
+            return;
+        }
+
+        if (request.method === "POST" && url.pathname === "/api/figma/export") {
             await handleExportRequest(request, response);
             return;
         }
 
         sendJson(response, 404, {
             ok: false,
-            error: `Route not found: ${request.method} ${request.url}`,
+            error: `Route not found: ${request.method} ${url.pathname}`,
         });
     } catch (error) {
         sendJson(response, 500, {
@@ -559,7 +915,8 @@ const server = http.createServer(async (request, response) => {
 server.listen(PORT, () => {
     const settings = readSettings();
     console.log("[figma2phaser] companion server started");
-    console.log(`[figma2phaser] http://localhost:${PORT}/health`);
+    console.log(`[figma2phaser] http://localhost:${PORT}/`);
+    console.log(`[figma2phaser] http://localhost:${PORT}/api/server/health`);
     console.log(`[figma2phaser] GAME_ROOT_DIR=${GAME_ROOT_DIR}`);
     console.log(`[figma2phaser] ATLAS_OUTPUT_DIR=${settings.atlasOutputDir}`);
     console.log(`[figma2phaser] TS_OUTPUT_DIR=${settings.tsOutputDir}`);

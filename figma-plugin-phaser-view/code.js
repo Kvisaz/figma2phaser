@@ -33,12 +33,7 @@ figma.showUI(__html__, {
   themeColors: true,
 });
 
-// Сразу запускаем экспорт по текущему выделению.
-runExportFromSelection().catch((error) => {
-  const message = normalizeErrorMessage(error);
-  postUiLog(message, "error");
-  figma.ui.postMessage({ type: "EXPORT_FAILED", message });
-});
+postSelectionDiagnostic();
 
 /**
  * Главный сценарий экспорта для одного выделенного корневого узла.
@@ -172,6 +167,54 @@ function getSingleSelectedNode() {
   }
 
   return root;
+}
+
+/**
+ * Возвращает диагностический статус текущего selection без запуска экспорта.
+ */
+function getSelectionDiagnostic() {
+  const selection = figma.currentPage.selection;
+
+  if (selection.length !== 1) {
+    return {
+      ok: false,
+      message: "Выберите ровно один корневой узел",
+      selectionCount: selection.length,
+    };
+  }
+
+  const root = selection[0];
+  if (!hasChildren(root)) {
+    return {
+      ok: false,
+      message: "Выбранный узел не поддерживает children",
+      selectionCount: selection.length,
+      rootName: root.name || root.id,
+      rootNodeId: root.id,
+    };
+  }
+
+  const visibleTopChildren = getTopLevelChildren(root);
+  return {
+    ok: visibleTopChildren.length > 0,
+    message: visibleTopChildren.length > 0
+      ? `Selection готов: "${root.name || root.id}", видимых верхних детей: ${visibleTopChildren.length}`
+      : "У выбранного узла нет видимых верхних детей для экспорта",
+    selectionCount: selection.length,
+    rootName: root.name || root.id,
+    rootNodeId: root.id,
+    visibleTopChildrenCount: visibleTopChildren.length,
+  };
+}
+
+/**
+ * Отправляет диагностику selection в UI.
+ */
+function postSelectionDiagnostic() {
+  figma.ui.postMessage({
+    type: "SELECTION_DIAGNOSTIC",
+    diagnostic: getSelectionDiagnostic(),
+  });
 }
 
 /**
@@ -419,8 +462,13 @@ figma.ui.onmessage = async (msg) => {
     return;
   }
 
-  if (msg.type === "RETRY_EXPORT") {
-    postUiLog("Повторный запуск экспорта");
+  if (msg.type === "GET_SELECTION_DIAGNOSTIC") {
+    postSelectionDiagnostic();
+    return;
+  }
+
+  if (msg.type === "EXPORT_TO_PROJECT") {
+    postUiLog("Запуск экспорта по кнопке UI");
     runExportFromSelection().catch((error) => {
       const message = normalizeErrorMessage(error);
       postUiLog(message, "error");
@@ -440,7 +488,4 @@ figma.ui.onmessage = async (msg) => {
     return;
   }
 
-  if (msg.type === "CLOSE") {
-    figma.closePlugin();
-  }
 };

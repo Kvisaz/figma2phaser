@@ -2,6 +2,30 @@
 
 Локальный Figma plugin для экспорта выбранного UI-узла в Phaser-friendly atlas и TypeScript-файлы.
 
+## Быстро: настройки server
+
+1. Запустите companion server:
+
+```bash
+cd server
+npm start
+```
+
+2. Откройте страницу настроек:
+
+```text
+http://localhost:3456/
+```
+
+3. На странице выберите:
+
+- `atlasOutputDir` - папку для atlas `.png/.json`;
+- `tsOutputDir` - папку для сгенерированных TypeScript-файлов.
+
+Figma plugin эти пути только показывает компактным списком. Менять `atlasOutputDir` и `tsOutputDir` нужно через server page.
+
+---
+
 Проект работает через companion server:
 
 1. Плагин экспортирует верхних детей выбранного Figma-узла в PNG.
@@ -148,9 +172,7 @@ manifest.warnings.unsafeNames
 
 ---
 
-## Настройки путей
-
-В UI плагина задаются:
+## Настройки
 
 - `serverUrl` - адрес companion server, по умолчанию `http://localhost:3456`;
 - `packName` - имя atlas pack;
@@ -164,7 +186,15 @@ manifest.warnings.unsafeNames
 - `atlasOutputDir` - filesystem path, куда сервер пишет atlas.
 - `tsOutputDir` - filesystem path, куда сервер пишет TypeScript.
 
-Под кнопками задания путей UI показывает краткую версию пути через ellipsis. Полный путь доступен в tooltip.
+`packName`, `atlasBasePath` и `serverUrl` задаются в Figma plugin.
+
+`atlasOutputDir` и `tsOutputDir` задаются на главной странице server:
+
+```text
+http://localhost:3456/
+```
+
+Figma plugin только показывает эти пути read-only preview через ellipsis. Полный путь доступен в tooltip.
 
 ---
 
@@ -219,14 +249,20 @@ npm start
 Проверка:
 
 ```text
-GET http://localhost:3456/health
+GET http://localhost:3456/api/server/health
 ```
 
-Настройки:
+Главная страница настроек:
 
 ```text
-GET  http://localhost:3456/settings
-POST http://localhost:3456/settings
+http://localhost:3456/
+```
+
+API настроек:
+
+```text
+GET  http://localhost:3456/api/server/settings
+POST http://localhost:3456/api/server/settings
 ```
 
 ---
@@ -240,13 +276,18 @@ cd server
 npm start
 ```
 
-2. В Figma выберите ровно один корневой UI-узел.
-3. Запустите plugin.
-4. Дождитесь завершения экспорта PNG из Figma.
-5. Проверьте `packName`, `atlasBasePath`, `serverUrl`.
-6. Нажмите `Задать путь экспорта atlas` и укажите абсолютную папку для `.png/.json`.
-7. Нажмите `Задать путь экспорта TS` и укажите абсолютную папку для `.ts`.
-8. Нажмите `Экспортировать файлы`.
+2. Откройте страницу настроек server:
+
+```text
+http://localhost:3456/
+```
+
+3. Выберите папки `atlasOutputDir` и `tsOutputDir`.
+4. В Figma выберите ровно один корневой UI-узел.
+5. Запустите plugin.
+6. Plugin только выполнит диагностику: загрузит настройки, проверит server и selection, выведет лог.
+7. Проверьте `packName`, `atlasBasePath`, `serverUrl`.
+8. Нажмите `Экспорт`.
 
 После этого server перезапишет atlas и TS-файлы в указанных папках.
 
@@ -254,11 +295,15 @@ npm start
 
 ## API server
 
-### `GET /health`
+### `GET /`
+
+Главная HTML-страница настроек server.
+
+### `GET /api/server/health`
 
 Возвращает состояние server и текущие output paths.
 
-### `GET /settings`
+### `GET /api/server/settings`
 
 Возвращает сохраненные пути:
 
@@ -272,7 +317,7 @@ npm start
 }
 ```
 
-### `POST /settings`
+### `POST /api/server/settings`
 
 Сохраняет пути:
 
@@ -283,7 +328,29 @@ npm start
 }
 ```
 
-### `POST /export`
+### `POST /api/server/choose-directory`
+
+Открывает системный выбор папки на стороне server и сохраняет выбранный путь.
+
+```json
+{
+  "kind": "atlas"
+}
+```
+
+или:
+
+```json
+{
+  "kind": "ts"
+}
+```
+
+### `POST /api/server/validate-settings`
+
+Проверяет, что папки заданы, существуют или могут быть созданы, и доступны для записи.
+
+### `POST /api/figma/export`
 
 Принимает:
 
