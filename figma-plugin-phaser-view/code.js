@@ -2,9 +2,10 @@
  * Figma plugin main thread.
  *
  * Задача:
- * - взять 1 выделенный узел;
- * - экспортировать только его верхних детей в PNG;
- * - собрать manifest.json с координатами/размерами;
+ * - найти top-level view* деревья на текущей странице;
+ * - собрать/обновить assets frame;
+ * - экспортировать текущие assets в PNG;
+ * - собрать manifest.json с views;
  * - отправить в UI данные для синхронизации через companion server.
  */
 
@@ -75,7 +76,7 @@ function getPageState() {
  * Current Page Scan
  * ============================================================================
  *
- * Startup-only diagnostics for finding Figma nodes that can become export roots
+ * Startup-only diagnostics for finding Figma nodes that can become view roots
  * or asset sources. This block does not affect export behavior.
  */
 
@@ -348,9 +349,15 @@ function collectAssetSourceNodesFromViewNode(viewNode, result) {
  */
 function copyAssetSourceNodesIntoAssetsFrame(sourceNodes, assetsFrame) {
   const layoutState = createAssetsFrameLayoutState(assetsFrame);
+  const existingNames = collectAssetsFrameChildNames(assetsFrame);
   const copiedNodes = [];
 
   sourceNodes.forEach((sourceNode) => {
+    const sourceName = String(sourceNode && sourceNode.name || "").trim();
+    if (sourceName && existingNames.has(sourceName)) {
+      return;
+    }
+
     const clone = sourceNode.clone();
     const sourceSize = readNodeSize(sourceNode);
     const position = getNextAssetsFramePosition(layoutState, sourceSize);
@@ -358,11 +365,33 @@ function copyAssetSourceNodesIntoAssetsFrame(sourceNodes, assetsFrame) {
     assetsFrame.appendChild(clone);
     clone.x = position.x;
     clone.y = position.y;
+    if (sourceName) {
+      existingNames.add(sourceName);
+    }
     copiedNodes.push(clone);
   });
 
   resizeAssetsFrameToFitLayout(assetsFrame, layoutState);
   return copiedNodes;
+}
+
+/**
+ * Возвращает набор имен детей assets-frame.
+ */
+function collectAssetsFrameChildNames(assetsFrame) {
+  const result = new Set();
+
+  if (!hasChildren(assetsFrame)) {
+    return result;
+  }
+
+  assetsFrame.children.forEach((child) => {
+    if (child && child.name) {
+      result.add(String(child.name).trim());
+    }
+  });
+
+  return result;
 }
 
 /**
@@ -445,11 +474,117 @@ function readNodeSize(node) {
 }
 
 /**
- * Главный сценарий экспорта для одного выделенного корневого узла.
+ * Главный сценарий page-level экспорта View.
  */
-async function runExportFromSelection() {
+async function runViewExportFromCurrentPage() {
+  const assetsFrameResult = getOrCreateAssetsFrame();
+  const viewRoots = getTopLevelViewNodes();
+
+  if (viewRoots.length === 0) {
+    throw new Error('На текущей странице не найдено узлов, имя которых начинается с "view"');
+  }
+
+  const packName = slugify(assetsFrameResult.frame.name || ASSETS_CORE_FRAME_NAME);
+  postUiLog(`Старт page-level экспорта. Pack: "${packName}", View roots: ${viewRoots.length}`);
+
+  const exportPlan = buildViewExportPlan({
+    viewRoots,
+    assetsFrame: assetsFrameResult.frame,
+  });
+
+  const files = [];
+  const manifestItems = [];
+  const skipped = [];
+  const exportedAssetsByName = new Map();
+  const unsafeNameWarnings = collectUnsafeNameWarningsForViews({
+    views: buildViewWarningEntries(viewRoots),
+    packSafeName: packName,
+  });
+
+  if (unsafeNameWarnings.length > 0) {
+    postUiLog(formatUnsafeNameWarningText(unsafeNameWarnings), "warn");
+  }
+
+  for (let index = 0; index < exportPlan.assets.length; index += 1) {
+    const asset = exportPlan.assets[index];
+
+    figma.ui.postMessage({
+      type: "EXPORT_PROGRESS",
+      done: index,
+      total: exportPlan.assets.length,
+      currentName: asset.name,
+    });
+
+    try {
+      const bytes = await asset.node.exportAsync(IMAGE_EXPORT_SETTINGS);
+      files.push({ fileName: asset.fileName, bytes });
+      exportedAssetsByName.set(asset.name, Object.assign({}, asset, {
+        fileName: asset.fileName,
+      }));
+      manifestItems.push({
+        nodeId: asset.node.id,
+        name: asset.name,
+        fileName: asset.fileName,
+        x: Math.round(asset.bounds.x),
+        y: Math.round(asset.bounds.y),
+        width: Math.round(asset.bounds.width),
+        height: Math.round(asset.bounds.height),
+        kind: asset.kind,
+        ninePadding: asset.ninePadding,
+      });
+    } catch (error) {
+      skipped.push({
+        nodeId: asset.node.id,
+        name: asset.name,
+        reason: normalizeErrorMessage(error),
+      });
+    }
+  }
+
+  figma.ui.postMessage({
+    type: "EXPORT_PROGRESS",
+    done: exportPlan.assets.length,
+    total: exportPlan.assets.length,
+    currentName: null,
+  });
+
+  if (files.length === 0) {
+    throw new Error("Не удалось экспортировать ни одного PNG");
+  }
+
+  const manifest = {
+    version: 1,
+    generatedAtIso: new Date().toISOString(),
+    root: buildViewExportRootData(viewRoots[0]),
+    items: manifestItems,
+    views: buildManifestViews({
+      viewRoots,
+      exportedAssetsByName,
+      skipped,
+    }),
+    skipped,
+    warnings: {
+      unsafeNames: unsafeNameWarnings,
+      viewAssetLinks: exportPlan.warnings.viewAssetLinks,
+    },
+  };
+
+  figma.ui.postMessage({
+    type: "EXPORT_READY",
+    packName,
+    files,
+    manifest,
+  });
+
+  postUiLog(`Экспорт завершен: ${files.length} PNG + manifest.json + views`);
+}
+
+/**
+ * Legacy selection-based export, kept for reference but not used by the UI.
+ */
+async function runLegacyExportFromSelection() {
   const root = getSingleSelectedNode();
-  postUiLog(`Старт экспорта. Корневой узел: "${root.name || root.id}"`);
+  postUiLog(`LEGACY export. Корневой узел: "${root.name || root.id}"`);
   const rootBounds = readAbsoluteBoundsOrThrow(root, "Корневой узел не имеет absoluteBoundingBox");
   const topChildren = getTopLevelChildren(root);
 
@@ -558,7 +693,312 @@ async function runExportFromSelection() {
     manifest,
   });
 
-  postUiLog(`Экспорт завершен: ${files.length} PNG + manifest.json`);
+  postUiLog(`LEGACY export завершен: ${files.length} PNG + manifest.json`);
+}
+
+/**
+ * Строит план page-level экспорта по view* деревьям и assets-frame.
+ */
+function buildViewExportPlan(props) {
+  const { viewRoots, assetsFrame } = props;
+  const assetLayoutState = createAssetsFrameLayoutState(assetsFrame);
+  const existingAssetsByName = collectAssetsFrameNodesByName(assetsFrame);
+  const assets = [];
+  const assetsByName = new Map();
+  const usedFileBaseNames = new Set();
+  const warnings = {
+    viewAssetLinks: [],
+  };
+
+  viewRoots.forEach((viewNode) => {
+    if (!hasChildren(viewNode)) return;
+
+    viewNode.children.forEach((child) => {
+      if (!child || child.visible === false || isViewNamedNode(child)) {
+        return;
+      }
+
+      const childName = String(child.name || child.id || "").trim();
+      if (!childName) {
+        return;
+      }
+
+      const childBounds = readExportBounds(child);
+      if (!childBounds) {
+        warnings.viewAssetLinks.push({
+          viewNodeId: viewNode.id,
+          viewName: viewNode.name || viewNode.id,
+          childNodeId: child.id,
+          childName,
+          reason: "No absoluteRenderBounds/absoluteBoundingBox",
+        });
+        return;
+      }
+
+      const assetSource = existingAssetsByName.get(childName) || child.clone();
+      if (!existingAssetsByName.has(childName)) {
+        const sourceSize = readNodeSize(child);
+        const position = getNextAssetsFramePosition(assetLayoutState, sourceSize);
+        assetsFrame.appendChild(assetSource);
+        assetSource.x = position.x;
+        assetSource.y = position.y;
+        existingAssetsByName.set(childName, assetSource);
+      }
+
+      if (assetsByName.has(childName)) {
+        return;
+      }
+
+      const baseName = makeUniqueFileBaseName({
+        rawName: childName,
+        fallbackName: child.id,
+        used: usedFileBaseNames,
+      });
+      const fileName = `${baseName}.png`;
+      const nineInfo = detectNineSliceInfo(childName);
+
+      const assetEntry = {
+        name: childName,
+        node: assetSource,
+        fileName,
+        kind: nineInfo.kind,
+        ninePadding: nineInfo.ninePadding,
+        bounds: {
+          x: childBounds.x,
+          y: childBounds.y,
+          width: childBounds.width,
+          height: childBounds.height,
+        },
+      };
+
+      assets.push(assetEntry);
+      assetsByName.set(childName, assetEntry);
+    });
+  });
+
+  resizeAssetsFrameToFitLayout(assetsFrame, assetLayoutState);
+
+  return {
+    assets,
+    warnings,
+  };
+}
+
+/**
+ * Строит минимальный список view/child имен для warning-логики.
+ */
+function buildViewWarningEntries(viewRoots) {
+  return viewRoots.map((viewNode) => {
+    const children = [];
+
+    if (hasChildren(viewNode)) {
+      viewNode.children.forEach((child) => {
+        if (!child || child.visible === false || isViewNamedNode(child)) {
+          return;
+        }
+
+        children.push({
+          nodeId: child.id,
+          name: child.name || child.id,
+        });
+      });
+    }
+
+    return {
+      nodeId: viewNode.id,
+      name: viewNode.name || viewNode.id,
+      children,
+    };
+  });
+}
+
+/**
+ * Возвращает карты детей assets-frame по имени.
+ */
+function collectAssetsFrameNodesByName(assetsFrame) {
+  const result = new Map();
+
+  if (!hasChildren(assetsFrame)) {
+    return result;
+  }
+
+  assetsFrame.children.forEach((child) => {
+    if (!child || !child.name) return;
+    result.set(String(child.name).trim(), child);
+  });
+
+  return result;
+}
+
+/**
+ * Строит data для root view в manifest.
+ */
+function buildViewExportRootData(viewNode) {
+  const bounds = readAbsoluteBoundsOrThrow(viewNode, "View не имеет absoluteBoundingBox");
+  return {
+    nodeId: viewNode.id,
+    name: viewNode.name || viewNode.id,
+    width: Math.round(bounds.width),
+    height: Math.round(bounds.height),
+  };
+}
+
+/**
+ * Строит manifest.views из page-level view tree.
+ */
+function buildManifestViews(props) {
+  const { viewRoots, exportedAssetsByName, skipped } = props;
+  const usedFunctionNames = new Set();
+  const views = [];
+
+  viewRoots.forEach((viewNode) => {
+    const viewBounds = readAbsoluteBounds(viewNode);
+    if (!viewBounds) {
+      skipped.push({
+        nodeId: viewNode.id,
+        name: viewNode.name || viewNode.id,
+        reason: "View has no absoluteBoundingBox",
+      });
+      return;
+    }
+
+    const baseFunctionName = toCamelCase(viewNode.name || viewNode.id) || "view";
+    const functionName = createUniqueFunctionName(baseFunctionName, usedFunctionNames);
+    const children = [];
+
+    if (hasChildren(viewNode)) {
+      viewNode.children.forEach((child) => {
+        if (!child || child.visible === false || isViewNamedNode(child)) {
+          return;
+        }
+
+        const childName = String(child.name || child.id || "").trim();
+        const assetEntry = exportedAssetsByName.get(childName);
+        if (!assetEntry) {
+          return;
+        }
+
+        const childBounds = readExportBounds(child);
+        if (!childBounds) {
+          skipped.push({
+            nodeId: child.id,
+            name: childName,
+            reason: "No absoluteRenderBounds/absoluteBoundingBox",
+          });
+          return;
+        }
+
+        children.push({
+          nodeId: child.id,
+          name: childName,
+          assetFileName: assetEntry.fileName,
+          x: Math.round(childBounds.x - viewBounds.x),
+          y: Math.round(childBounds.y - viewBounds.y),
+          width: Math.round(childBounds.width),
+          height: Math.round(childBounds.height),
+          kind: assetEntry.kind,
+          ninePadding: assetEntry.ninePadding,
+        });
+      });
+    }
+
+    views.push({
+      nodeId: viewNode.id,
+      name: viewNode.name || viewNode.id,
+      functionName,
+      x: Math.round(viewBounds.x),
+      y: Math.round(viewBounds.y),
+      width: Math.round(viewBounds.width),
+      height: Math.round(viewBounds.height),
+      children,
+    });
+  });
+
+  return views;
+}
+
+/**
+ * Создает уникальное имя view-функции.
+ */
+function createUniqueFunctionName(baseName, used) {
+  let next = baseName || "view";
+  let suffix = 2;
+
+  while (used.has(next)) {
+    next = `${baseName || "view"}${suffix}`;
+    suffix += 1;
+  }
+
+  used.add(next);
+  return next;
+}
+
+/**
+ * Собирает warning по несовпадающим View child / asset ссылкам.
+ */
+function collectUnsafeNameWarningsForViews(props) {
+  const { views, packSafeName } = props;
+  const warnings = [];
+
+  if (!isSafeFileBaseName(packSafeName)) {
+    warnings.push({
+      role: "pack",
+      nodeId: null,
+      name: packSafeName,
+      safeName: slugify(packSafeName),
+      invalidCharacters: collectUnsafeFileNameCharacters(packSafeName),
+    });
+  }
+
+  views.forEach((view) => {
+    const warning = createUnsafeNameWarning({
+      node: {
+        id: view.nodeId,
+        name: view.name,
+      },
+      role: "view",
+      safeName: slugify(view.name || view.nodeId),
+    });
+
+    if (warning) {
+      warnings.push(warning);
+    }
+
+    view.children.forEach((child) => {
+      const childWarning = createUnsafeNameWarning({
+        node: {
+          id: child.nodeId,
+          name: child.name,
+        },
+        role: "child",
+        safeName: slugify(child.name || child.nodeId),
+      });
+
+      if (childWarning) {
+        warnings.push(childWarning);
+      }
+    });
+  });
+
+  return warnings;
+}
+
+/**
+ * Преобразует имя в camelCase для generated view-функций.
+ */
+function toCamelCase(input) {
+  const parts = String(input || "")
+    .replace(/[^a-zA-Z0-9]+/g, " ")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+
+  if (parts.length === 0) return "";
+
+  const [first, ...rest] = parts;
+  const head = first.charAt(0).toLowerCase() + first.slice(1);
+  const result = [head, ...rest.map((part) => part.charAt(0).toUpperCase() + part.slice(1))].join("");
+  return /^[0-9]/.test(result) ? `n${result}` : result;
 }
 
 /**
@@ -918,8 +1358,8 @@ figma.ui.onmessage = async (msg) => {
   }
 
   if (msg.type === "EXPORT_TO_PROJECT") {
-    postUiLog("Запуск экспорта по кнопке UI");
-    runExportFromSelection().catch((error) => {
+    postUiLog("Запуск page-level экспорта по кнопке UI");
+    runViewExportFromCurrentPage().catch((error) => {
       const message = normalizeErrorMessage(error);
       postUiLog(message, "error");
       figma.ui.postMessage({ type: "EXPORT_FAILED", message });

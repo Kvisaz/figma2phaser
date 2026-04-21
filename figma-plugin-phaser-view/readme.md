@@ -1,6 +1,6 @@
 # Figma Phaser View Export
 
-Локальный Figma plugin для экспорта выбранного UI-узла в Phaser-friendly atlas и TypeScript-файлы.
+Локальный Figma plugin для page-level экспорта `view*` деревьев в Phaser-friendly atlas и TypeScript-файлы.
 
 ## Быстро: настройки server
 
@@ -28,7 +28,7 @@ Figma plugin эти пути только показывает компактн�
 
 Проект работает через companion server:
 
-1. Плагин экспортирует верхних детей выбранного Figma-узла в PNG.
+1. Плагин находит `view*` деревья на текущей странице, собирает assets frame и экспортирует PNG.
 2. UI плагина отправляет PNG, manifest и настройки на `http://localhost:3456`.
 3. `server/server.js` пакует atlas через `free-tex-packer-core`.
 4. Сервер пишет atlas PNG/JSON и TypeScript-файлы прямо в указанные папки игрового проекта.
@@ -55,7 +55,7 @@ figma-plugin-phaser-view/
 ### Figma plugin
 
 - `manifest.json` - manifest Figma plugin.
-- `code.js` - main thread: чтение selection, экспорт PNG, сбор manifest, `figma.clientStorage`.
+- `code.js` - main thread: page-level view export, сбор PNG, сбор manifest, `figma.clientStorage`.
 - `ui.html` - UI: настройки, выбор путей, отправка экспорта на server.
 
 ### Companion server
@@ -68,12 +68,13 @@ figma-plugin-phaser-view/
 
 ## Что экспортируется из Figma
 
-Из выбранного корневого узла экспортируются:
+Из текущей страницы экспортируются:
 
-- только верхние дети;
-- только видимые верхние дети;
-- каждый верхний ребенок как отдельный PNG;
-- координаты относительно левого верхнего угла корневого узла.
+- все `view*` узлы, найденные на странице;
+- только видимые дети первого уровня у каждого `view*`;
+- если child тоже начинается с `view`, он обрабатывается как отдельный view;
+- каждый уникальный asset как отдельный PNG;
+- координаты children в `*.view.ts` считаются относительно bounds соответствующего `view`.
 
 Если имя узла заканчивается на:
 
@@ -160,8 +161,21 @@ assets-core
     }
   ],
   "skipped": [],
+  "views": [
+    {
+      "nodeId": "3:469",
+      "name": "viewMain",
+      "functionName": "viewMain",
+      "x": 0,
+      "y": 0,
+      "width": 1280,
+      "height": 720,
+      "children": []
+    }
+  ],
   "warnings": {
-    "unsafeNames": []
+    "unsafeNames": [],
+    "viewAssetLinks": []
   }
 }
 ```
@@ -197,6 +211,7 @@ manifest.warnings.unsafeNames
 [atlasOutputDir]/[packName].json
 [tsOutputDir]/[packName]-assets.ts
 [tsOutputDir]/[packName]-scene.ts
+[tsOutputDir]/[packName].view.ts
 [tsOutputDir]/types.ts
 [tsOutputDir]/utils.ts
 ```
@@ -328,10 +343,9 @@ http://localhost:3456/
 3. Выберите папки `atlasOutputDir` и `tsOutputDir`.
 4. В Figma выберите ровно один корневой UI-узел.
 5. Запустите plugin.
-6. Plugin только выполнит диагностику: загрузит настройки, проверит server и selection, выведет лог.
+6. Plugin выполнит диагностику: загрузит настройки, проверит server и текущую страницу, выведет лог.
 7. Проверьте `atlasBasePath` и `serverUrl`.
-8. Убедитесь, что на странице есть top-level `assets*` frame. Если его нет, нажмите `Ассеты`.
-9. Нажмите `Экспорт`.
+8. Нажмите `Экспорт`.
 
 После этого server перезапишет atlas и TS-файлы в указанных папках.
 
@@ -420,8 +434,8 @@ http://localhost:3456/
 
 ## Ограничения
 
-- Должен быть выбран ровно один корневой узел.
-- Экспортируются только верхние дети выбранного узла.
+- Основной сценарий - экспорт `view*` деревьев с текущей страницы.
+- Старый selection-based export сохранен только как legacy-функция в коде.
 - Скрытые узлы пропускаются.
 - Figma plugin не пишет в файловую систему напрямую.
 - Запись файлов выполняет только companion server.
@@ -431,17 +445,13 @@ http://localhost:3456/
 
 ## Частые ошибки
 
-### `Выберите ровно один корневой узел`
+### `На текущей странице не найдено узлов, имя которых начинается с "view"`
 
-В Figma выделено 0 или больше 1 узла.
-
-### `Выбранный узел не поддерживает children`
-
-Выбран узел без дочерних слоев.
+На странице нет top-level или вложенных `view*` узлов.
 
 ### `Не удалось экспортировать ни одного PNG`
 
-Все верхние дети скрыты или не экспортировались.
+Все найденные assets не экспортировались.
 
 ### `Failed to fetch`
 
@@ -471,4 +481,3 @@ http://localhost:3456/
 - Auto-sync по таймеру.
 - WebSocket-событие для игры после успешного экспорта.
 - Генерация более полного Phaser runtime-слоя.
-- Экспорт вложенной структуры, а не только верхних детей.
