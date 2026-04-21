@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Figma Phaser Export Server</title>
+  <link rel="stylesheet" href="/settings-page.css" />
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Figma Phaser Export Server</h1>
+      <p id="serverStatus" class="status">Server diagnostics...</p>
+    </header>
+
+    <section class="card grid">
+      <label>
+        Atlas output folder
+        <div class="pathRow">
+          <input id="atlasOutputDir" />
+          <button id="chooseAtlas" type="button">Выбрать папку</button>
+        </div>
+      </label>
+
+      <label>
+        TypeScript output folder
+        <div class="pathRow">
+          <input id="tsOutputDir" />
+          <button id="chooseTs" type="button">Выбрать папку</button>
+        </div>
+      </label>
+
+      <div>
+        <button id="saveSettings" type="button" class="secondary">Сохранить</button>
+        <button id="validateSettings" type="button">Проверить папки</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <div id="log">Ready.</div>
+    </section>
+  </main>
+
+  <script src="/settings-page.js"></script>
+</body>
+</html>
