@@ -18,6 +18,11 @@ const ASSETS_CORE_FRAME_HEIGHT = 3600;
 const ASSETS_CORE_FRAME_OFFSET_X = 200;
 const ASSETS_COLLECTION_MARGIN = 40;
 const ASSETS_COLLECTION_GAP = 40;
+const ASSETS_ABOUT_TEXT_NAME = "assets-about";
+const ASSETS_ABOUT_TEXT_FONT = { family: "Inter", style: "Regular" };
+const ASSETS_ABOUT_TEXT_SIZE = 24;
+const ASSETS_ABOUT_TEXT_GAP = 16;
+const ASSETS_ABOUT_TEXT_CONTENT = "1. можно менять размеры NineSlice\n2. ассеты с одинаковыми именами заменяют друг друга";
 
 /**
  * Настройки экспорта PNG для каждого верхнего ребенка.
@@ -209,14 +214,23 @@ function formatScanEntryLines(entries) {
 /**
  * Собирает ассеты из top-level view* деревьев в assets-frame.
  */
-function collectAssetsFromViewTrees() {
+async function collectAssetsFromViewTrees() {
   const assetsFrameResult = getOrCreateAssetsFrame();
   const viewRoots = getTopLevelViewNodes();
   const sourceNodes = collectAssetSourceNodesFromViewRoots(viewRoots);
   const copiedNodes = copyAssetSourceNodesIntoAssetsFrame(sourceNodes, assetsFrameResult.frame);
+  let aboutTextNode = null;
+
+  try {
+    aboutTextNode = await syncAssetsAboutText(assetsFrameResult.frame);
+  } catch (error) {
+    postUiLog(`Не удалось обновить assets-about: ${normalizeErrorMessage(error)}`, "warn");
+  }
 
   figma.currentPage.selection = [assetsFrameResult.frame];
-  figma.viewport.scrollAndZoomIntoView([assetsFrameResult.frame]);
+  figma.viewport.scrollAndZoomIntoView(
+    aboutTextNode ? [aboutTextNode, assetsFrameResult.frame] : [assetsFrameResult.frame]
+  );
 
   return {
     assetsFrameCreated: assetsFrameResult.created,
@@ -226,6 +240,38 @@ function collectAssetsFromViewTrees() {
     sourceNodesCount: sourceNodes.length,
     copiedNodesCount: copiedNodes.length,
   };
+}
+
+/**
+ * Возвращает верхнеуровневый служебный node assets-about, если он уже есть.
+ */
+function findAssetsAboutNodeOnCurrentPage() {
+  return figma.currentPage.children.find((node) => node.name === ASSETS_ABOUT_TEXT_NAME) || null;
+}
+
+/**
+ * Создает или обновляет служебный текст над assets-frame.
+ */
+async function syncAssetsAboutText(assetsFrame) {
+  const existingNode = findAssetsAboutNodeOnCurrentPage();
+  if (existingNode) {
+    existingNode.remove();
+  }
+
+  await figma.loadFontAsync(ASSETS_ABOUT_TEXT_FONT);
+
+  const textNode = figma.createText();
+  textNode.name = ASSETS_ABOUT_TEXT_NAME;
+  textNode.textAutoResize = "WIDTH_AND_HEIGHT";
+  textNode.fontName = ASSETS_ABOUT_TEXT_FONT;
+  textNode.fontSize = ASSETS_ABOUT_TEXT_SIZE;
+  textNode.characters = ASSETS_ABOUT_TEXT_CONTENT;
+
+  figma.currentPage.appendChild(textNode);
+  textNode.x = assetsFrame.x;
+  textNode.y = assetsFrame.y - textNode.height - ASSETS_ABOUT_TEXT_GAP;
+
+  return textNode;
 }
 
 /**
@@ -474,6 +520,21 @@ function readNodeSize(node) {
 }
 
 /**
+ * Читает актуальную геометрию узла, как она хранится в assets-frame.
+ * Export использует этот снимок, чтобы учитывать ручные move/resize правки
+ * в assets* frame, включая оптимизацию nine-slice текстур.
+ */
+function readAssetFrameNodeGeometry(node) {
+  const size = readNodeSize(node);
+  return {
+    x: Math.round(typeof node.x === "number" ? node.x : 0),
+    y: Math.round(typeof node.y === "number" ? node.y : 0),
+    width: Math.round(size.width),
+    height: Math.round(size.height),
+  };
+}
+
+/**
  * Главный сценарий page-level экспорта View.
  */
 async function runViewExportFromCurrentPage() {
@@ -517,6 +578,7 @@ async function runViewExportFromCurrentPage() {
 
     try {
       const bytes = await asset.node.exportAsync(IMAGE_EXPORT_SETTINGS);
+      const assetGeometry = readAssetFrameNodeGeometry(asset.node);
       files.push({ fileName: asset.fileName, bytes });
       exportedAssetsByName.set(asset.name, Object.assign({}, asset, {
         fileName: asset.fileName,
@@ -525,10 +587,10 @@ async function runViewExportFromCurrentPage() {
         nodeId: asset.node.id,
         name: asset.name,
         fileName: asset.fileName,
-        x: Math.round(asset.bounds.x),
-        y: Math.round(asset.bounds.y),
-        width: Math.round(asset.bounds.width),
-        height: Math.round(asset.bounds.height),
+        x: assetGeometry.x,
+        y: assetGeometry.y,
+        width: assetGeometry.width,
+        height: assetGeometry.height,
         kind: asset.kind,
         ninePadding: asset.ninePadding,
       });
@@ -763,12 +825,6 @@ function buildViewExportPlan(props) {
         fileName,
         kind: nineInfo.kind,
         ninePadding: nineInfo.ninePadding,
-        bounds: {
-          x: childBounds.x,
-          y: childBounds.y,
-          width: childBounds.width,
-          height: childBounds.height,
-        },
       };
 
       assets.push(assetEntry);
@@ -1340,7 +1396,7 @@ figma.ui.onmessage = async (msg) => {
 
   if (msg.type === "COLLECT_ASSETS" || msg.type === "CREATE_ASSETS_FRAME") {
     try {
-      const result = collectAssetsFromViewTrees();
+      const result = await collectAssetsFromViewTrees();
       postUiLog(
         `Ассеты собраны: view* корней ${result.viewRootsCount}, найдено ${result.sourceNodesCount}, скопировано ${result.copiedNodesCount} в "${result.assetsFrameName}"`
       );

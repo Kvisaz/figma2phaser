@@ -13,21 +13,6 @@ export interface IAutoAssetData {
   readonly ninePadding?: number;
 }
 
-export type AutoAssetMap = Record<string, IAutoAssetData>;
-
-export interface IAutoAtlasConfig {
-  readonly name: string;
-  readonly pngUrl: string;
-  readonly jsonUrl: string;
-}
-
-export interface IAutoAssetsConfig {
-  readonly images: AutoAssetMap;
-  readonly preload: {
-    readonly atlases: readonly IAutoAtlasConfig[];
-  };
-}
-
 export interface IAddAssetImageProps {
   scene: Phaser.Scene;
   asset: IAutoAssetData;
