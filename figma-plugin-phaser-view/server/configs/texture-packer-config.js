@@ -8,8 +8,6 @@
  */
 
 const TEXTURE_PACKER_OPTIONS = {
-    width: 2048,
-    height: 2048,
     fixedSize: false,
     powerOfTwo: false,
     padding: 2,
@@ -20,6 +18,8 @@ const TEXTURE_PACKER_OPTIONS = {
     removeFileExtension: false,
     prependFolderName: false,
     exporter: "Phaser3",
+    /** критично для минимизации размера, если отключить будет 2048x2048 **/
+    packer: "MaxRectsPacker",
 };
 
 module.exports = {
