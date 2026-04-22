@@ -116,9 +116,12 @@ panel.bg.nine.20
 Любой видимый узел, имя которого начинается с `button`, считается отдельным renderable view container:
 
 - в `manifest.views` у него будет `"button": true`;
-- в generated `*.view.ts` у него будет `button: true`;
+- в generated `*.view.ts` все button data лежат в едином объекте `[packCamel]Buttons`;
+- ключи `[packCamel]Buttons` совпадают с точными именами Figma-узлов; небезопасные ключи генерируются quoted, например `'button back'`;
+- в button data будет `button: true`;
+- отдельные button factory-функции не генерируются;
 - runtime `createView()` выставит `container.setData("button", true)`;
-- если такой узел лежит внутри `view*` или другого `button*`, parent получит child `{ type: "view", view: buttonNameData, ... }`, а не прямой asset child.
+- если такой узел лежит внутри `view*` или другого `button*`, parent получит child `{ type: "view", view: packButtons["buttonName"], ... }`, а не прямой asset child.
 
 ### Button с детьми
 
@@ -135,9 +138,9 @@ viewMain
 
 Ожидаемый runtime смысл:
 
-- `buttonPlayData` имеет `button: true`;
-- `buttonPlayData.children` содержит asset children для `button.play.bg.nine.20` и `button.play.label`;
-- `viewMainData.children` содержит nested view child со ссылкой на `buttonPlayData`.
+- `assetsCoreButtons["buttonPlay"]` имеет `button: true`;
+- `assetsCoreButtons["buttonPlay"].children` содержит asset children для `button.play.bg.nine.20` и `button.play.label`;
+- `viewMainData.children` содержит nested view child со ссылкой на `assetsCoreButtons["buttonPlay"]`.
 
 ### Button без детей
 
@@ -153,21 +156,23 @@ viewMain
 Смысл generated data:
 
 ```ts
-export const buttonBackData: IAutoViewData = {
-  name: "buttonBack",
-  button: true,
-  width: 80,
-  height: 80,
-  children: [
-    {
-      type: "asset",
-      asset: assetsCoreAutoAssets.buttonBack,
-      x: 0,
-      y: 0,
-      width: 80,
-      height: 80,
-    },
-  ],
+export const assetsCoreButtons: { readonly [name: string]: IAutoViewData } = {
+  buttonBack: {
+    name: "buttonBack",
+    button: true,
+    width: 80,
+    height: 80,
+    children: [
+      {
+        type: "asset",
+        asset: assetsCoreAutoAssets.buttonBack,
+        x: 0,
+        y: 0,
+        width: 80,
+        height: 80,
+      },
+    ],
+  },
 };
 
 export const viewMainData: IAutoViewData = {
@@ -177,7 +182,7 @@ export const viewMainData: IAutoViewData = {
   children: [
     {
       type: "view",
-      view: buttonBackData,
+      view: assetsCoreButtons["buttonBack"],
       x: 350,
       y: 260,
       width: 80,
@@ -189,10 +194,10 @@ export const viewMainData: IAutoViewData = {
 
 В этом случае имя `buttonBack` используется в двух ролях:
 
-- как имя button view: `buttonBackData`, `buttonBack(scene)`;
+- как ключ button data: `assetsCoreButtons["buttonBack"]`;
 - как имя atlas asset: `assetsCoreAutoAssets.buttonBack`.
 
-Это не конфликтует в TypeScript, потому что asset находится внутри объекта `assetsCoreAutoAssets`, а view data экспортируется отдельной константой.
+Это не конфликтует в TypeScript, потому что asset находится внутри объекта `assetsCoreAutoAssets`, а button data находится внутри объекта `assetsCoreButtons`.
 
 Если в `assets*` frame уже есть asset с таким же именем `buttonBack`, export возьмет PNG оттуда. Если такого asset нет, plugin склонирует сам `buttonBack` в `assets*` frame и экспортирует его.
 
