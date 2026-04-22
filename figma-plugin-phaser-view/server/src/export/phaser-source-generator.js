@@ -81,6 +81,7 @@ function buildAssetEntries(manifest) {
 
         return {
             assetKey,
+            name: item.name || frameBaseName,
             kind,
             ninePadding,
             x: Number(item.x || 0),
@@ -107,7 +108,7 @@ function buildAssetsTs(props) {
     const { entries, packName, packCamel, atlasPngUrl, atlasJsonUrl } = props;
     const assetsObjectLines = entries.map((entry) => {
         const ninePaddingLine = entry.kind === "nine" ? `\n    ninePadding: ${entry.ninePadding},` : "";
-        return `  ${entry.assetKey}: {\n    name: "${entry.assetKey}",\n    url: "${atlasPngUrl}",\n    frameName: "${entry.frameName}",\n    width: ${entry.width},\n    height: ${entry.height},\n    x: ${entry.x},\n    y: ${entry.y},\n    kind: "${entry.kind}",${ninePaddingLine}\n  },`;
+        return `  ${entry.assetKey}: {\n    name: ${JSON.stringify(String(entry.name || ""))},\n    url: "${atlasPngUrl}",\n    frameName: "${entry.frameName}",\n    width: ${entry.width},\n    height: ${entry.height},\n    x: ${entry.x},\n    y: ${entry.y},\n    kind: "${entry.kind}",${ninePaddingLine}\n  },`;
     });
     const orderLines = entries.map((entry) => `  "${entry.assetKey}",`);
     const preloadFunctionName = `preload${toPascalCase(packName)}Assets`;
@@ -369,7 +370,7 @@ function buildViewDataLiteral(view, packCamel) {
     const childBlocks = view.children.map((child) => buildViewChildBlock(child, packCamel));
     const buttonLine = view.button ? "\n  button: true," : "";
 
-    return `{\n  name: "${view.functionName}",${buttonLine}\n  width: ${Number(view.width || 0)},\n  height: ${Number(view.height || 0)},\n  children: [\n${childBlocks.join("\n")}\n  ],\n}`;
+    return `{\n  name: ${JSON.stringify(String(view.name || ""))},${buttonLine}\n  width: ${Number(view.width || 0)},\n  height: ${Number(view.height || 0)},\n  children: [\n${childBlocks.join("\n")}\n  ],\n}`;
 }
 
 /**
