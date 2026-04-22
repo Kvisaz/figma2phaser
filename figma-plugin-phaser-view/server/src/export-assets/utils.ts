@@ -71,15 +71,13 @@ export function addAssetNine(props: IAddAssetNineProps): Phaser.GameObjects.Nine
 export function createView(scene: Phaser.Scene, view: IAutoViewData): Phaser.GameObjects.Container {
   const root = con(scene, 0, 0, view.width, view.height);
   root.name = view.name || "";
-  if (view.button) {
-    root.setData("button", true);
-  }
 
   view.children.forEach((child) => {
     root.add(renderViewChild(scene, child));
   });
 
   if(view.button){
+    root.setData("button", true);
     setConInteractive(root);
   }
 
@@ -95,7 +93,7 @@ export function renderViewChild(
 ): Phaser.GameObjects.GameObject {
   if (child.type === "view") {
     const nestedView = createView(scene, child.view);
-    nestedView.setPosition(child.x, child.y);
+    setLeftTop(nestedView, child.x, child.y);
     return nestedView;
   }
 
@@ -118,11 +116,24 @@ export function renderViewChild(
   });
 }
 
-function setConInteractive(con: Phaser.GameObjects.Container): Phaser.GameObjects.Container {
+
+/** Кстати занеси это в утилиты потом **/
+function setConInteractive(con: Phaser.GameObjects.Container):
+    Phaser.GameObjects.Container {
+
   const bounds = con.getBounds();
   con.setSize(bounds.width, bounds.height);
+
   con.setInteractive({
-    handCursor: true,
+    hitArea: new Phaser.Geom.Rectangle(
+        con.displayOriginX,
+        con.displayOriginY,
+        con.width,
+        con.height,
+    ),
+    hitAreaCallback: Phaser.Geom.Rectangle.Contains,
+    useHandCursor: true,
   });
+
   return con;
 }
