@@ -45,6 +45,7 @@ export interface IAutoViewChildData {
 }
 
 export interface IAutoViewData {
+  readonly name?: string;
   readonly width: number;
   readonly height: number;
   readonly children: readonly IAutoViewChildData[];

@@ -86,6 +86,7 @@ figma-plugin-phaser-view/
 - каждый уникальный asset как отдельный PNG;
 - для `manifest.items` и `[packName]-assets.ts` используются актуальные `x/y/width/height` детей `assets*` frame;
 - координаты children в `*.view.ts` считаются относительно bounds соответствующего `view`.
+- в `*.view.ts` у `IAutoViewData` есть safe `name`, совпадающий с `functionName`; runtime `createView()` ставит его в `container.name`.
 
 Если имя узла заканчивается на:
 
