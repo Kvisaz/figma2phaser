@@ -88,10 +88,6 @@ figma-plugin-phaser-view/
 - координаты children в `*.view.ts` считаются относительно bounds соответствующего `view`.
 - в `*.view.ts` у `IAutoViewData` есть safe `name`, совпадающий с `functionName`; runtime `createView()` ставит его в `container.name`.
 
-`button*` - это view container с `button: true` в generated data. Если `button*` является leaf node без exportable children, plugin экспортирует сам `button*` node как single asset внутри этого button view. Это покрывает иконки-кнопки вроде стрелки назад.
-
-Важно: prefix `button*` теперь имеет semantic meaning. Если нужен обычный asset, который не должен становиться button view, не называйте его с prefix `button`.
-
 Если имя узла заканчивается на:
 
 ```text
@@ -112,6 +108,95 @@ nine.<число>
 ```text
 panel.bg.nine.20
 ```
+
+---
+
+## Button
+
+Любой видимый узел, имя которого начинается с `button`, считается отдельным renderable view container:
+
+- в `manifest.views` у него будет `"button": true`;
+- в generated `*.view.ts` у него будет `button: true`;
+- runtime `createView()` выставит `container.setData("button", true)`;
+- если такой узел лежит внутри `view*` или другого `button*`, parent получит child `{ type: "view", view: buttonNameData, ... }`, а не прямой asset child.
+
+### Button с детьми
+
+Если у `button*` есть видимые direct children, которые не начинаются с `view` или `button`, они экспортируются как обычные PNG assets и становятся children этого button view.
+
+Пример Figma-структуры:
+
+```text
+viewMain
+  buttonPlay
+    button.play.bg.nine.20
+    button.play.label
+```
+
+Ожидаемый runtime смысл:
+
+- `buttonPlayData` имеет `button: true`;
+- `buttonPlayData.children` содержит asset children для `button.play.bg.nine.20` и `button.play.label`;
+- `viewMainData.children` содержит nested view child со ссылкой на `buttonPlayData`.
+
+### Button без детей
+
+Если `button*` является leaf node без exportable children, имя принадлежит самому объекту без детей. Plugin экспортирует этот же node как single PNG asset и кладет его внутрь auto-generated button view.
+
+Пример Figma-структуры:
+
+```text
+viewMain
+  buttonBack
+```
+
+Смысл generated data:
+
+```ts
+export const buttonBackData: IAutoViewData = {
+  name: "buttonBack",
+  button: true,
+  width: 80,
+  height: 80,
+  children: [
+    {
+      type: "asset",
+      asset: assetsCoreAutoAssets.buttonBack,
+      x: 0,
+      y: 0,
+      width: 80,
+      height: 80,
+    },
+  ],
+};
+
+export const viewMainData: IAutoViewData = {
+  name: "viewMain",
+  width: 768,
+  height: 485,
+  children: [
+    {
+      type: "view",
+      view: buttonBackData,
+      x: 350,
+      y: 260,
+      width: 80,
+      height: 80,
+    },
+  ],
+};
+```
+
+В этом случае имя `buttonBack` используется в двух ролях:
+
+- как имя button view: `buttonBackData`, `buttonBack(scene)`;
+- как имя atlas asset: `assetsCoreAutoAssets.buttonBack`.
+
+Это не конфликтует в TypeScript, потому что asset находится внутри объекта `assetsCoreAutoAssets`, а view data экспортируется отдельной константой.
+
+Если в `assets*` frame уже есть asset с таким же именем `buttonBack`, export возьмет PNG оттуда. Если такого asset нет, plugin склонирует сам `buttonBack` в `assets*` frame и экспортирует его.
+
+Важно: prefix `button*` имеет semantic meaning. Если нужен обычный asset, который не должен становиться button view, не называйте его с prefix `button`.
 
 ---
 
