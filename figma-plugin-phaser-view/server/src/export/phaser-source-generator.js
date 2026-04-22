@@ -174,29 +174,94 @@ export class ${sceneClassName} extends Phaser.Scene {
 }
 
 /**
- * Resolves view child metadata against generated asset entries.
+ * Resolves view child metadata against generated asset and view entries.
  */
 function buildViewEntries(manifest, assetEntries) {
     const assetsByFileName = new Map(assetEntries.map((entry) => [entry.frameName, entry]));
-    return Array.isArray(manifest.views)
-        ? manifest.views.map((view) => {
-            const children = Array.isArray(view.children)
-                ? view.children.map((child) => {
-                    const assetEntry = assetsByFileName.get(child.assetFileName);
-                    if (!assetEntry) return null;
+    const rawViews = Array.isArray(manifest.views) ? manifest.views : [];
+    const viewsByNodeId = new Map(rawViews.map((view) => [view.nodeId, view]));
+    const viewsByFunctionName = new Map(rawViews.map((view) => [view.functionName, view]));
+
+    return rawViews.map((view) => {
+        const children = Array.isArray(view.children)
+            ? view.children.map((child) => {
+                const childType = child.type || "asset";
+
+                if (childType === "view") {
+                    const childView =
+                        viewsByNodeId.get(child.viewNodeId || child.nodeId) ||
+                        viewsByFunctionName.get(child.viewFunctionName);
+
+                    if (!childView) return null;
+
                     return {
                         ...child,
-                        assetKey: assetEntry.assetKey,
+                        type: "view",
+                        viewFunctionName: childView.functionName,
+                        viewDataName: `${childView.functionName}Data`,
                     };
-                }).filter(Boolean)
-                : [];
+                }
 
-            return {
-                ...view,
-                children,
-            };
-        })
-        : [];
+                const assetEntry = assetsByFileName.get(child.assetFileName);
+                if (!assetEntry) return null;
+
+                return {
+                    ...child,
+                    type: "asset",
+                    assetKey: assetEntry.assetKey,
+                };
+            }).filter(Boolean)
+            : [];
+
+        return {
+            ...view,
+            children,
+        };
+    });
+}
+
+/**
+ * Sorts generated view declarations so child view data exists before parents.
+ */
+function sortViewEntriesForDeclarations(viewEntries) {
+    const entriesByFunctionName = new Map(viewEntries.map((entry) => [entry.functionName, entry]));
+    const visiting = new Set();
+    const visited = new Set();
+    const result = [];
+
+    function visit(entry) {
+        if (!entry || visited.has(entry.functionName)) return;
+        if (visiting.has(entry.functionName)) return;
+
+        visiting.add(entry.functionName);
+
+        entry.children
+            .filter((child) => child.type === "view")
+            .forEach((child) => {
+                visit(entriesByFunctionName.get(child.viewFunctionName));
+            });
+
+        visiting.delete(entry.functionName);
+        visited.add(entry.functionName);
+        result.push(entry);
+    }
+
+    viewEntries.forEach((entry) => {
+        visit(entry);
+    });
+
+    return result;
+}
+
+/**
+ * Generates one view child data block.
+ */
+function buildViewChildBlock(child, packCamel) {
+    if (child.type === "view") {
+        return `    {\n      type: "view",\n      view: ${child.viewDataName},\n      x: ${Number(child.x || 0)},\n      y: ${Number(child.y || 0)},\n      width: ${Number(child.width || 0)},\n      height: ${Number(child.height || 0)},\n    },`;
+    }
+
+    return `    {\n      type: "asset",\n      asset: ${packCamel}AutoAssets.${child.assetKey},\n      x: ${Number(child.x || 0)},\n      y: ${Number(child.y || 0)},\n      width: ${Number(child.width || 0)},\n      height: ${Number(child.height || 0)},\n    },`;
 }
 
 /**
@@ -205,9 +270,9 @@ function buildViewEntries(manifest, assetEntries) {
 function buildViewsTs(props) {
     const { packName, packCamel, manifest } = props;
     const assetEntries = buildAssetEntries(manifest);
-    const viewEntries = buildViewEntries(manifest, assetEntries);
+    const viewEntries = sortViewEntriesForDeclarations(buildViewEntries(manifest, assetEntries));
     const viewBlocks = viewEntries.map((view) => {
-        const childBlocks = view.children.map((child) => `    {\n      asset: ${packCamel}AutoAssets.${child.assetKey},\n      x: ${Number(child.x || 0)},\n      y: ${Number(child.y || 0)},\n      width: ${Number(child.width || 0)},\n      height: ${Number(child.height || 0)},\n    },`);
+        const childBlocks = view.children.map((child) => buildViewChildBlock(child, packCamel));
         const buttonLine = view.button ? "\n  button: true," : "";
 
         return `export const ${view.functionName}Data: IAutoViewData = {\n  name: "${view.functionName}",${buttonLine}\n  width: ${Number(view.width || 0)},\n  height: ${Number(view.height || 0)},\n  children: [\n${childBlocks.join("\n")}\n  ],\n};\n\nexport function ${view.functionName}(scene: Phaser.Scene): Phaser.GameObjects.Container {\n  return createView(scene, ${view.functionName}Data);\n}\n`;
@@ -262,6 +327,8 @@ module.exports = {
     buildAssetsTs,
     buildSceneTs,
     buildViewEntries,
+    sortViewEntriesForDeclarations,
+    buildViewChildBlock,
     buildViewsTs,
     buildPhaserSceneSources,
 };

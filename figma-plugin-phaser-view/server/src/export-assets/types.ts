@@ -36,7 +36,8 @@ export interface PosObject {
   setPosition(x: number, y: number): this;
 }
 
-export interface IAutoViewChildData {
+export interface IAutoViewAssetChildData {
+  readonly type?: "asset";
   readonly asset: IAutoAssetData;
   readonly x: number;
   readonly y: number;
@@ -51,3 +52,14 @@ export interface IAutoViewData {
   readonly height: number;
   readonly children: readonly IAutoViewChildData[];
 }
+
+export interface IAutoViewRefChildData {
+  readonly type: "view";
+  readonly view: IAutoViewData;
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+}
+
+export type IAutoViewChildData = IAutoViewAssetChildData | IAutoViewRefChildData;

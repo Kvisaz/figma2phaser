@@ -56,7 +56,10 @@ export function addAssetNine(props: IAddAssetNineProps): Phaser.GameObjects.Nine
       asset.frameName,
       targetWidth,
       targetHeight,
-      padding,padding,padding,padding,
+      padding,
+      padding,
+      padding,
+      padding,
   );
 
   return setLeftTop(nineSliceNode, targetX, targetY);
@@ -76,6 +79,10 @@ export function createView(scene: Phaser.Scene, view: IAutoViewData): Phaser.Gam
     root.add(renderViewChild(scene, child));
   });
 
+  if(view.button){
+    setConInteractive(root);
+  }
+
   return root;
 }
 
@@ -86,6 +93,12 @@ export function renderViewChild(
     scene: Phaser.Scene,
     child: IAutoViewChildData,
 ): Phaser.GameObjects.GameObject {
+  if (child.type === "view") {
+    const nestedView = createView(scene, child.view);
+    nestedView.setPosition(child.x, child.y);
+    return nestedView;
+  }
+
   if (child.asset.kind === "nine") {
     return addAssetNine({
       scene,
@@ -103,4 +116,13 @@ export function renderViewChild(
     x: child.x,
     y: child.y,
   });
+}
+
+function setConInteractive(con: Phaser.GameObjects.Container): Phaser.GameObjects.Container {
+  const bounds = con.getBounds();
+  con.setSize(bounds.width, bounds.height);
+  con.setInteractive({
+    handCursor: true,
+  });
+  return con;
 }

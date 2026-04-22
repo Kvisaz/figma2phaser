@@ -360,7 +360,7 @@
       if (!scan) return "Скан страницы недоступен";
       return [
         `Скан страницы "${scan.pageName}": просмотрено узлов ${scan.scannedNodesCount}`,
-        `Объекты view*: ${scan.viewNodes.length}`,
+        `Объекты view/button: ${scan.viewNodes.length}`,
         ...formatScanEntryLines(scan.viewNodes),
         `Фреймы assets*: ${scan.assetsFrames.length}`,
         ...formatScanEntryLines(scan.assetsFrames),
@@ -528,10 +528,10 @@
     }
 
     /**
-     * Starts assets collection from view* trees.
+     * Starts assets collection from view/button trees.
      */
     function createAssetsFrame() {
-      appendLog("Сбор ассетов из view* деревьев");
+      appendLog("Сбор ассетов из view/button деревьев");
       postToPlugin({ type: "COLLECT_ASSETS" });
     }
 
@@ -589,7 +589,7 @@
       if (msg.type === "ASSETS_COLLECTION_DONE") {
         const result = msg.result || {};
         appendLog(
-          `Ассеты собраны: view* корней ${result.viewRootsCount || 0}, найдено ${result.sourceNodesCount || 0}, скопировано ${result.copiedNodesCount || 0}`
+          `Ассеты собраны: view/button корней ${result.viewRootsCount || 0}, view nodes ${result.viewNodesCount || 0}, найдено ${result.sourceNodesCount || 0}, скопировано ${result.copiedNodesCount || 0}`
         );
         return;
       }
