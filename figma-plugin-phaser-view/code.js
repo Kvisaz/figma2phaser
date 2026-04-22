@@ -23,6 +23,7 @@ const ASSETS_ABOUT_TEXT_FONT = { family: "Inter", style: "Regular" };
 const ASSETS_ABOUT_TEXT_SIZE = 24;
 const ASSETS_ABOUT_TEXT_GAP = 16;
 const ASSETS_ABOUT_TEXT_CONTENT = "1. можно менять размеры NineSlice\n2. ассеты с одинаковыми именами заменяют друг друга";
+const TEXT_FONT_FAMILY_FALLBACKS = Object.freeze(["Roboto", "Verdana", "sans-serif"]);
 
 /**
  * Настройки экспорта PNG для каждого верхнего ребенка.
@@ -1425,7 +1426,7 @@ function buildTextStyleSnapshotFromNode(node) {
   const fontName = node && node.fontName;
 
   if (fontName && fontName !== figma.mixed && typeof fontName.family === "string" && fontName.family) {
-    style.fontFamily = fontName.family;
+    style.fontFamily = composeFontFamilyWithFallbacks(fontName.family);
   }
 
   const fontSize = node && node.fontSize;
@@ -1449,6 +1450,34 @@ function buildTextStyleSnapshotFromNode(node) {
   }
 
   return style;
+}
+
+/**
+ * Собирает CSS font-family строку с fallback chain для Phaser TextStyle.
+ */
+function composeFontFamilyWithFallbacks(fontFamily) {
+  const primaryFamily = formatFontFamilyPart(fontFamily);
+  if (!primaryFamily) return "";
+
+  return `${primaryFamily}, ${TEXT_FONT_FAMILY_FALLBACKS.join(", ")}`;
+}
+
+/**
+ * Нормализует один font-family token, quoting если имя содержит пробелы или спецсимволы.
+ */
+function formatFontFamilyPart(fontFamily) {
+  const value = String(fontFamily || "").trim();
+  if (!value) return "";
+
+  if (/^['\"].*['\"]$/.test(value)) {
+    return value;
+  }
+
+  if (/[\s,]/.test(value) || /[^a-zA-Z0-9_-]/.test(value)) {
+    return JSON.stringify(value);
+  }
+
+  return value;
 }
 
 /**
