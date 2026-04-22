@@ -117,22 +117,38 @@ export function renderViewChild(
 }
 
 
-/** Кстати занеси это в утилиты потом **/
+/**
+ * Делает контейнер интерактивным
+ * попутно устанавливает его размер
+ * и смещает детей на половину чтобы сохранить анимации от центра
+ *  **/
 function setConInteractive(con: Phaser.GameObjects.Container):
     Phaser.GameObjects.Container {
 
   const bounds = con.getBounds();
   con.setSize(bounds.width, bounds.height);
+  fixContainerChildPosition(con);
 
   con.setInteractive({
-    hitArea: new Phaser.Geom.Rectangle(
-        con.displayOriginX,
-        con.displayOriginY,
-        con.width,
-        con.height,
-    ),
-    hitAreaCallback: Phaser.Geom.Rectangle.Contains,
     useHandCursor: true,
+  });
+
+  return con;
+}
+
+/** смещаем всех детей контейнера на половину
+ * чтобы видимый центр контейнера соответствовал его точке 0, 0 (левый верхний угол)
+ **/
+function fixContainerChildPosition(con: Phaser.GameObjects.Container):
+    Phaser.GameObjects.Container {
+
+  const bounds = con.getBounds();
+  const dX = -bounds.width/2;
+  const dY = -bounds.height/2;
+
+  con.getAll().forEach((t) => {
+    (t as PosObject).x += dX;
+    (t as PosObject).y += dY;
   });
 
   return con;
