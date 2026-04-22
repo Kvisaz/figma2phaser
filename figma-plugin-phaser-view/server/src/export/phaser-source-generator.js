@@ -174,31 +174,41 @@ export class ${sceneClassName} extends Phaser.Scene {
 }
 
 /**
- * Resolves view child metadata against generated asset and view entries.
+ * Resolves view child metadata against generated asset, view, and text entries.
  */
 function buildViewEntries(manifest, assetEntries) {
     const assetsByFileName = new Map(assetEntries.map((entry) => [entry.frameName, entry]));
-    const rawViews = Array.isArray(manifest.views) ? manifest.views : [];
-    const viewsByNodeId = new Map(rawViews.map((view) => [view.nodeId, view]));
-    const viewsByFunctionName = new Map(rawViews.map((view) => [view.functionName, view]));
+    const rawEntries = Array.isArray(manifest.views) ? manifest.views : [];
+    const entriesByNodeId = new Map(rawEntries.map((entry) => [entry.nodeId, entry]));
+    const entriesByFunctionName = new Map(rawEntries.map((entry) => [entry.functionName, entry]));
 
-    return rawViews.map((view) => {
-        const children = Array.isArray(view.children)
-            ? view.children.map((child) => {
+    return rawEntries.map((entry) => {
+        const children = Array.isArray(entry.children)
+            ? entry.children.map((child) => {
                 const childType = child.type || "asset";
 
-                if (childType === "view") {
-                    const childView =
-                        viewsByNodeId.get(child.viewNodeId || child.nodeId) ||
-                        viewsByFunctionName.get(child.viewFunctionName);
+                if (childType === "view" || childType === "text") {
+                    const childEntry =
+                        entriesByNodeId.get(child.viewNodeId || child.textNodeId || child.nodeId) ||
+                        entriesByFunctionName.get(child.viewFunctionName || child.textFunctionName);
 
-                    if (!childView) return null;
+                    if (!childEntry) return null;
+
+                    const dataName = childEntry.dataName || `${childEntry.functionName}Data`;
+                    if (childType === "view") {
+                        return {
+                            ...child,
+                            type: "view",
+                            viewFunctionName: childEntry.functionName,
+                            viewDataName: dataName,
+                        };
+                    }
 
                     return {
                         ...child,
-                        type: "view",
-                        viewFunctionName: childView.functionName,
-                        viewDataName: `${childView.functionName}Data`,
+                        type: "text",
+                        textFunctionName: childEntry.functionName,
+                        textDataName: dataName,
                     };
                 }
 
@@ -214,10 +224,30 @@ function buildViewEntries(manifest, assetEntries) {
             : [];
 
         return {
-            ...view,
+            ...entry,
+            dataName: entry.dataName || `${entry.functionName}Data`,
             children,
         };
     });
+}
+
+/**
+ * Собирает все text child data names для импорта в view.ts.
+ */
+function collectTextChildImportNames(viewEntries) {
+    const result = new Set();
+
+    viewEntries.forEach((view) => {
+        if (!Array.isArray(view.children)) return;
+
+        view.children.forEach((child) => {
+            if (child.type !== "text") return;
+            if (!child.textDataName) return;
+            result.add(child.textDataName);
+        });
+    });
+
+    return Array.from(result).sort((a, b) => a.localeCompare(b));
 }
 
 /**
@@ -261,26 +291,88 @@ function buildViewChildBlock(child, packCamel) {
         return `    {\n      type: "view",\n      view: ${child.viewDataName},\n      x: ${Number(child.x || 0)},\n      y: ${Number(child.y || 0)},\n      width: ${Number(child.width || 0)},\n      height: ${Number(child.height || 0)},\n    },`;
     }
 
+    if (child.type === "text") {
+        return `    {\n      type: "text",\n      text: ${child.textDataName},\n      x: ${Number(child.x || 0)},\n      y: ${Number(child.y || 0)},\n      width: ${Number(child.width || 0)},\n      height: ${Number(child.height || 0)},\n    },`;
+    }
+
     return `    {\n      type: "asset",\n      asset: ${packCamel}AutoAssets.${child.assetKey},\n      x: ${Number(child.x || 0)},\n      y: ${Number(child.y || 0)},\n      width: ${Number(child.width || 0)},\n      height: ${Number(child.height || 0)},\n    },`;
 }
 
 /**
- * Generates [packName].view.ts with declarative view data and constructors.
+ * Converts a text style snapshot into generated TS object literal.
+ */
+function buildTextStyleLiteral(style) {
+    const snapshot = style && typeof style === "object" ? style : {};
+    const lines = [];
+
+    if (snapshot.fontFamily) {
+        lines.push(`    fontFamily: ${JSON.stringify(String(snapshot.fontFamily))},`);
+    }
+
+    if (snapshot.fontSize !== undefined && snapshot.fontSize !== null && Number.isFinite(Number(snapshot.fontSize))) {
+        lines.push(`    fontSize: ${Number(snapshot.fontSize)},`);
+    }
+
+    if (snapshot.color) {
+        lines.push(`    color: ${JSON.stringify(String(snapshot.color))},`);
+    }
+
+    if (snapshot.stroke) {
+        lines.push(`    stroke: ${JSON.stringify(String(snapshot.stroke))},`);
+    }
+
+    if (snapshot.strokeThickness !== undefined && snapshot.strokeThickness !== null && Number.isFinite(Number(snapshot.strokeThickness))) {
+        lines.push(`    strokeThickness: ${Number(snapshot.strokeThickness)},`);
+    }
+
+    if (lines.length === 0) {
+        return "{}";
+    }
+
+    return `{\n${lines.join("\n")}\n  }`;
+}
+
+/**
+ * Converts base text into a locale map literal.
+ */
+function buildTextLocaleMapLiteral(baseText) {
+    const value = JSON.stringify(String(baseText || ""));
+    return `{\n  en: ${value},\n  ru: ${value},\n}`;
+}
+
+/**
+ * Generates one text child data block.
+ */
+function buildTextBlock(entry) {
+    const localeMapName = `${entry.functionName}LocaleMap`;
+    const styleLiteral = buildTextStyleLiteral(entry.textStyle);
+    const localeMapLiteral = buildTextLocaleMapLiteral(entry.baseText);
+
+    return `/** @localise-map */\nexport const ${localeMapName} = ${localeMapLiteral};\n\nexport const ${entry.dataName}: IAutoTextData = {\n  name: ${JSON.stringify(entry.functionName)},\n  x: ${Number(entry.x || 0)},\n  y: ${Number(entry.y || 0)},\n  width: ${Number(entry.width || 0)},\n  height: ${Number(entry.height || 0)},\n  baseText: ${JSON.stringify(String(entry.baseText || ""))},\n  localeMap: ${localeMapName},\n  style: ${styleLiteral},\n};\n\nexport function ${entry.functionName}(scene: Phaser.Scene, options?: ITextViewOptions): Phaser.GameObjects.Text {\n  return createTextView(scene, ${entry.dataName}, options);\n}\n`;
+}
+
+/**
+ * Generates [packName].view.ts with declarative view/button/text data and constructors.
  */
 function buildViewsTs(props) {
-    const { packName, packCamel, manifest } = props;
-    const assetEntries = buildAssetEntries(manifest);
-    const viewEntries = sortViewEntriesForDeclarations(buildViewEntries(manifest, assetEntries));
-    const viewBlocks = viewEntries.map((view) => {
+    const { packCamel, packFileName, viewEntries } = props;
+    const resolvedEntries = sortViewEntriesForDeclarations(
+        (Array.isArray(viewEntries) ? viewEntries : []).filter((entry) => entry.kind !== "text")
+    );
+    const textImportNames = collectTextChildImportNames(resolvedEntries);
+    const textImportBlock = textImportNames.length > 0
+        ? `import {\n  ${textImportNames.join(",\n  ")}\n} from "./${packFileName}.text";\n`
+        : "";
+    const viewBlocks = resolvedEntries.map((view) => {
         const childBlocks = view.children.map((child) => buildViewChildBlock(child, packCamel));
         const buttonLine = view.button ? "\n  button: true," : "";
 
-        return `export const ${view.functionName}Data: IAutoViewData = {\n  name: "${view.functionName}",${buttonLine}\n  width: ${Number(view.width || 0)},\n  height: ${Number(view.height || 0)},\n  children: [\n${childBlocks.join("\n")}\n  ],\n};\n\nexport function ${view.functionName}(scene: Phaser.Scene): Phaser.GameObjects.Container {\n  return createView(scene, ${view.functionName}Data);\n}\n`;
+        return `export const ${view.dataName}: IAutoViewData = {\n  name: "${view.functionName}",${buttonLine}\n  width: ${Number(view.width || 0)},\n  height: ${Number(view.height || 0)},\n  children: [\n${childBlocks.join("\n")}\n  ],\n};\n\nexport function ${view.functionName}(scene: Phaser.Scene): Phaser.GameObjects.Container {\n  return createView(scene, ${view.dataName});\n}\n`;
     });
 
     return `// This file is auto-generated by figma2assets plugin. Do not edit manually.
-import { ${packCamel}AutoAssets } from "./${sanitizePackName(packName)}-assets";
-import { createView } from "./utils";
+import { ${packCamel}AutoAssets } from "./${packFileName}-assets";
+${textImportBlock}import { createView } from "./utils";
 import { IAutoViewData } from "./types";
 
 ${viewBlocks.join("\n")}
@@ -288,7 +380,28 @@ ${viewBlocks.join("\n")}
 }
 
 /**
- * Generates types.ts, utils.ts, [pack]-assets.ts, and [pack]-scene.ts.
+ * Generates [packName].text.ts with text factory data and constructors.
+ */
+function buildTextTs(props) {
+    const { textEntries } = props;
+    const resolvedEntries = Array.isArray(textEntries) ? textEntries.filter((entry) => entry.kind === "text") : [];
+
+    if (resolvedEntries.length === 0) {
+        return null;
+    }
+
+    const textBlocks = resolvedEntries.map((entry) => buildTextBlock(entry));
+
+    return `// This file is auto-generated by figma2assets plugin. Do not edit manually.
+import { createTextView } from "./utils";
+import { IAutoTextData, ITextViewOptions } from "./types";
+
+${textBlocks.join("\n")}
+`;
+}
+
+/**
+ * Generates types.ts, utils.ts, [pack]-assets.ts, [pack]-scene.ts, and renderable view/text factories.
  */
 function buildPhaserSceneSources(props) {
     const { packName, manifest, atlasBasePath } = props;
@@ -297,6 +410,7 @@ function buildPhaserSceneSources(props) {
     const atlasPngUrl = buildAtlasFilePath(atlasBasePath, `${packName}.png`);
     const atlasJsonUrl = buildAtlasFilePath(atlasBasePath, `${packName}.json`);
     const entries = buildAssetEntries(manifest);
+    const renderableEntries = buildViewEntries(manifest, entries);
 
     return {
         assetsTs: buildAssetsTs({
@@ -314,7 +428,13 @@ function buildPhaserSceneSources(props) {
         viewTs: buildViewsTs({
             packName,
             packCamel,
-            manifest,
+            packFileName,
+            viewEntries: renderableEntries,
+        }),
+        textTs: buildTextTs({
+            packName,
+            packFileName,
+            textEntries: renderableEntries,
         }),
     };
 }
@@ -327,8 +447,13 @@ module.exports = {
     buildAssetsTs,
     buildSceneTs,
     buildViewEntries,
+    collectTextChildImportNames,
     sortViewEntriesForDeclarations,
     buildViewChildBlock,
+    buildTextStyleLiteral,
+    buildTextLocaleMapLiteral,
+    buildTextBlock,
     buildViewsTs,
+    buildTextTs,
     buildPhaserSceneSources,
 };

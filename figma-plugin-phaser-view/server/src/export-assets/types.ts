@@ -65,4 +65,39 @@ export interface IAutoViewRefChildData {
   readonly height: number;
 }
 
-export type IAutoViewChildData = IAutoViewAssetChildData | IAutoViewRefChildData;
+export interface ITextViewOptions {
+  readonly text?: string;
+  readonly style?: Partial<Phaser.Types.GameObjects.Text.TextStyle>;
+  readonly locale?: string;
+}
+
+export interface IAutoTextLocaleMap {
+  readonly en: string;
+  readonly ru: string;
+  readonly [locale: string]: string;
+}
+
+export interface IAutoTextData {
+  readonly name?: string;
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+  readonly baseText: string;
+  readonly localeMap: IAutoTextLocaleMap;
+  readonly style: Partial<Phaser.Types.GameObjects.Text.TextStyle>;
+}
+
+export interface IAutoTextRefChildData {
+  readonly type: "text";
+  readonly text: IAutoTextData;
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+}
+
+export type IAutoViewChildData =
+  | IAutoViewAssetChildData
+  | IAutoViewRefChildData
+  | IAutoTextRefChildData;

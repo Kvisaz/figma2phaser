@@ -2,8 +2,10 @@
 import {
   IAddAssetImageProps,
   IAddAssetNineProps,
+  IAutoTextData,
   IAutoViewChildData,
   IAutoViewData,
+  ITextViewOptions,
   PosGameObject,
   PosObject
 } from "./types";
@@ -73,6 +75,67 @@ export function addAssetNine(props: IAddAssetNineProps): Phaser.GameObjects.Nine
 }
 
 /**
+ * Resolves localized text by locale key with fallback chain.
+ */
+function resolveLocaleText(
+  localeMap: IAutoTextData["localeMap"],
+  locale?: string,
+  fallbackText = "",
+): string {
+  const requestedLocale = String(locale || "en");
+  const nextText =
+    localeMap[requestedLocale] ??
+    localeMap.en ??
+    localeMap.ru ??
+    fallbackText ??
+    "";
+
+  return String(nextText || "");
+}
+
+/**
+ * Creates a Phaser Text object from declarative text data.
+ */
+export function createTextView(
+  scene: Phaser.Scene,
+  textData: IAutoTextData,
+  options: ITextViewOptions = {},
+): Phaser.GameObjects.Text {
+  const style = {
+    ...textData.style,
+    ...(options.style || {}),
+  };
+  const hasStaticTextOverride = typeof options.text === "string";
+  const initialText = hasStaticTextOverride
+    ? String(options.text || "")
+    : resolveLocaleText(textData.localeMap, options.locale, textData.baseText);
+
+  const textObject = scene.add.text(0, 0, initialText, style);
+  textObject.name = textData.name || "";
+  textObject.setOrigin(0, 0);
+  textObject.setPosition(textData.x || 0, textData.y || 0);
+
+  if (!hasStaticTextOverride) {
+    const localeListener = (payload: { locale?: string } | string | null | undefined) => {
+      const locale =
+        payload && typeof payload === "object"
+          ? payload.locale
+          : typeof payload === "string"
+            ? payload
+            : undefined;
+      textObject.setText(resolveLocaleText(textData.localeMap, locale, textData.baseText));
+    };
+
+    scene.events.on("onLocaleChange", localeListener);
+    textObject.once(Phaser.GameObjects.Events.DESTROY, () => {
+      scene.events.off("onLocaleChange", localeListener);
+    });
+  }
+
+  return textObject;
+}
+
+/**
  * Creates a Phaser container from declarative view data.
  */
 export function createView(scene: Phaser.Scene, view: IAutoViewData): Phaser.GameObjects.Container {
@@ -113,6 +176,12 @@ export function renderViewChild(
     const nestedView = createView(scene, child.view);
     setLeftTop(nestedView, child.x, child.y);
     return nestedView;
+  }
+
+  if (child.type === "text") {
+    const textNode = createTextView(scene, child.text);
+    textNode.setPosition(child.x, child.y);
+    return textNode;
   }
 
   if (child.asset.kind === "nine") {

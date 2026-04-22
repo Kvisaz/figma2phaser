@@ -51,6 +51,7 @@ function buildOutputFilePaths(outputSettings, packName) {
         assetsTsFilePath: path.join(outputSettings.tsOutputDir, `${packName}-assets.ts`),
         sceneTsFilePath: path.join(outputSettings.tsOutputDir, `${packName}-scene.ts`),
         viewTsFilePath: path.join(outputSettings.tsOutputDir, `${packName}.view.ts`),
+        textTsFilePath: path.join(outputSettings.tsOutputDir, `${packName}.text.ts`),
         exportAssetsTargetDir: outputSettings.tsOutputDir,
     };
 }
@@ -89,6 +90,9 @@ function writeExportFiles(filePaths, atlasPngBuffer, atlasJsonText, sceneSources
     writeTextFile(filePaths.assetsTsFilePath, sceneSources.assetsTs);
     writeTextFile(filePaths.sceneTsFilePath, sceneSources.sceneTs);
     writeTextFile(filePaths.viewTsFilePath, sceneSources.viewTs);
+    if (sceneSources.textTs) {
+        writeTextFile(filePaths.textTsFilePath, sceneSources.textTs);
+    }
     copyDirectoryContents(EXPORT_ASSETS_SOURCE_DIR, filePaths.exportAssetsTargetDir);
 }
 
@@ -133,19 +137,25 @@ async function handleExportRequest(request, response) {
 
     writeExportFiles(filePaths, atlasPngBuffer, atlasJsonText, sceneSources);
 
+    const filesWritten = [
+        filePaths.atlasPngFilePath,
+        filePaths.atlasJsonFilePath,
+        filePaths.assetsTsFilePath,
+        filePaths.sceneTsFilePath,
+        filePaths.viewTsFilePath,
+    ];
+
+    if (sceneSources.textTs) {
+        filesWritten.push(filePaths.textTsFilePath);
+    }
+
     sendJson(response, 200, {
         ok: true,
         message: "Export written to game folder",
         packName,
         atlasOutputDir: outputSettings.atlasOutputDir,
         tsOutputDir: outputSettings.tsOutputDir,
-        filesWritten: [
-            filePaths.atlasPngFilePath,
-            filePaths.atlasJsonFilePath,
-            filePaths.assetsTsFilePath,
-            filePaths.sceneTsFilePath,
-            filePaths.viewTsFilePath,
-        ],
+        filesWritten,
     });
 }
 

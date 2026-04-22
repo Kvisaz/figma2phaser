@@ -1,6 +1,6 @@
 # Figma Phaser View Export
 
-Локальный Figma plugin для page-level экспорта `view*` и `button*` деревьев в Phaser-friendly atlas и TypeScript-файлы.
+Локальный Figma plugin для page-level экспорта `view*`, `button*` и `text*` деревьев в Phaser-friendly atlas и TypeScript-файлы.
 
 ## Особенности
 
@@ -10,7 +10,7 @@
 - `assets*` frame служит видимым контролем этого контракта: сразу видно, какие ассеты реально попали в pack и какие имена будут переиспользованы.
 - `Экспорт` берет актуальные `x/y/width/height` ассетов из их текущей геометрии в `assets*` frame, поэтому можно вручную подрезать nine-slice текстуры и двигать ассеты без повторного пересчета из `view*` / `button*`.
 - Если нужны два визуально разных ассета, им нужно дать разные имена в Figma.
-- Рекурсивная обработка `view*` / `button*` допускается: вложенный объект с таким именем обрабатывается как отдельный View, а не как обычный asset child.
+- Рекурсивная обработка `view*` / `button*` / `text*` допускается: вложенный объект с таким именем обрабатывается как отдельный renderable child, а не как обычный asset child.
 
 ## Быстро: настройки server
 
@@ -38,7 +38,7 @@ Figma plugin эти пути только показывает компактн�
 
 Проект работает через companion server:
 
-1. Плагин находит `view*` / `button*` деревья на текущей странице, собирает assets frame и экспортирует PNG.
+1. Плагин находит `view*` / `button*` / `text*` деревья на текущей странице, собирает assets frame и экспортирует PNG.
 2. UI плагина отправляет PNG, manifest и настройки на `http://localhost:3456`.
 3. `server/server.js` пакует atlas через `free-tex-packer-core`.
 4. Сервер пишет atlas PNG/JSON и TypeScript-файлы прямо в указанные папки игрового проекта.
@@ -80,9 +80,9 @@ figma-plugin-phaser-view/
 
 Из текущей страницы экспортируются:
 
-- все `view*` и `button*` узлы, найденные на странице;
+- все `view*`, `button*` и `text*` узлы, найденные на странице;
 - только видимые дети первого уровня у каждого `view*` / `button*`;
-- если child тоже начинается с `view` или `button`, он обрабатывается как вложенный view child;
+- если child тоже начинается с `view`, `button` или `text`, он обрабатывается как вложенный renderable child;
 - каждый уникальный asset как отдельный PNG;
 - для `manifest.items` и `[packName]-assets.ts` используются актуальные `x/y/width/height` детей `assets*` frame;
 - координаты children в `*.view.ts` считаются относительно bounds соответствующего `view`.
@@ -200,6 +200,21 @@ export const viewMainData: IAutoViewData = {
 
 ---
 
+## Text
+
+Любой видимый `TEXT`-узел, имя которого начинается с `text`, считается отдельным renderable text view:
+
+- в `manifest.views` у него будет `"kind": "text"`;
+- в generated `*.text.ts` у него будет отдельная factory-функция и локальный `localeMap`;
+- runtime `createTextView()` рендерит его как обычный `Phaser.GameObjects.Text`;
+- из Figma в style попадают `fontFamily`, `fontSize`, `color`, `strokeThickness` и `stroke`;
+- рядом с локальным map ставится маркер `/** @localise-map */` для быстрого поиска;
+- `scene.events.emit("onLocaleChange", { locale })` переключает текст по ключу локали из локального map.
+
+Если нужен runtime override текста, `options.text` заменяет стартовое значение, а `options.style` дополняет style-снимок из Figma. `options.locale` задает стартовый ключ локали.
+
+---
+
 ## Assets frame и кнопка `Ассеты`
 
 На текущей странице должен быть top-level `FRAME`, имя которого начинается с:
@@ -220,16 +235,16 @@ assets-core
 - ищет первый top-level `FRAME` с именем `assets*`;
 - если такой frame найден, складывает копии в него;
 - если такого frame нет, создает `assets-core` размером `1920x3600`;
-- собирает ассеты из `view*` / `button*` деревьев на текущей странице.
+- собирает ассеты из `view*` / `button*` / `text*` деревьев на текущей странице.
 - над `assets*` frame создает или обновляет служебный text node `assets-about` с подсказкой: `1. можно менять размеры NineSlice`, `2. ассеты с одинаковыми именами заменяют друг друга`.
 
 Правило сбора:
 
-- плагин ищет `view*` / `button*` узлы на текущей странице, не заходя внутрь `assets*` frame;
-- внутри каждого `view*` / `button*` смотрит только детей верхнего уровня;
-- если ребенок тоже начинается с `view` или `button`, он исследуется как вложенный view;
-- если ребенок не начинается с `view` или `button`, он копируется в `assets*` frame на свободное место.
-- `Экспорт` не пересчитывает размеры и позицию ассетов из `view*` / `button*`; он использует текущую геометрию детей `assets*` frame.
+- плагин ищет `view*` / `button*` / `text*` узлы на текущей странице, не заходя внутрь `assets*` frame;
+- внутри каждого `view*` / `button*` / `text*` смотрит только детей верхнего уровня;
+- если ребенок тоже начинается с `view`, `button` или `text`, он исследуется как вложенный renderable child;
+- если ребенок не начинается с `view`, `button` или `text`, он копируется в `assets*` frame на свободное место.
+- `Экспорт` не пересчитывает размеры и позицию ассетов из `view*` / `button*` / `text*`; он использует текущую геометрию детей `assets*` frame.
 
 Важно: `assets*` frame должен лежать на верхнем уровне страницы. Вложенный `assets*` frame сейчас не используется как целевой контейнер.
 
@@ -369,6 +384,7 @@ manifest.warnings.unsafeNames
 [tsOutputDir]/[packName]-assets.ts
 [tsOutputDir]/[packName]-scene.ts
 [tsOutputDir]/[packName].view.ts
+[tsOutputDir]/[packName].text.ts
 [tsOutputDir]/types.ts
 [tsOutputDir]/utils.ts
 ```

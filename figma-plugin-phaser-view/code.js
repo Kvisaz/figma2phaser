@@ -2,7 +2,7 @@
  * Figma plugin main thread.
  *
  * Задача:
- * - найти top-level view/button деревья на текущей странице;
+ * - найти top-level view/button/text деревья на текущей странице;
  * - собрать/обновить assets frame;
  * - экспортировать текущие assets в PNG;
  * - собрать manifest.json с views;
@@ -114,7 +114,7 @@ function scanPageChildren(nodes, result) {
   nodes.forEach((node) => {
     result.scannedNodesCount += 1;
 
-    if (isRenderableViewNode(node)) {
+    if (isRenderableNode(node)) {
       result.viewNodes.push(createScanEntry(node));
     }
 
@@ -129,27 +129,35 @@ function scanPageChildren(nodes, result) {
 }
 
 /**
- * Возвращает semantic kind renderable view-like узла.
+ * Возвращает semantic kind renderable узла.
  */
-function getViewKind(node) {
+function getRenderableKind(node) {
   if (!node || !node.name) return null;
+  if (node.type === "TEXT" && startsWithIgnoreCase(node.name, "text")) return "text";
   if (startsWithIgnoreCase(node.name, "button")) return "button";
   if (startsWithIgnoreCase(node.name, "view")) return "view";
   return null;
 }
 
 /**
- * Проверяет, является ли узел renderable view/button контейнером.
+ * Проверяет, является ли узел renderable контейнером или text root.
  */
-function isRenderableViewNode(node) {
-  return getViewKind(node) !== null;
+function isRenderableNode(node) {
+  return getRenderableKind(node) !== null;
+}
+
+/**
+ * Проверяет, является ли узел renderable text node.
+ */
+function isRenderableTextNode(node) {
+  return getRenderableKind(node) === "text";
 }
 
 /**
  * Проверяет, должен ли узел экспортироваться как обычный PNG asset.
  */
 function isAssetCandidateNode(node) {
-  return Boolean(node && node.visible !== false && !isRenderableViewNode(node));
+  return Boolean(node && node.visible !== false && !isRenderableNode(node));
 }
 
 /**
@@ -199,7 +207,7 @@ function getNodePath(node) {
 function formatCurrentPageScanDiagnostic(diagnostic) {
   const lines = [
     `Скан страницы "${diagnostic.pageName}": просмотрено узлов ${diagnostic.scannedNodesCount}`,
-    `Объекты view/button: ${diagnostic.viewNodes.length}`,
+    `Объекты view/button/text: ${diagnostic.viewNodes.length}`,
     ...formatScanEntryLines(diagnostic.viewNodes),
     `Фреймы assets*: ${diagnostic.assetsFrames.length}`,
     ...formatScanEntryLines(diagnostic.assetsFrames),
@@ -220,16 +228,46 @@ function formatScanEntryLines(entries) {
 }
 
 /**
+ * Формирует многострочный отчет по view/button/text дереву.
+ */
+function formatViewExportReport(packName, viewGraph) {
+  const lines = [`Старт page-level экспорта. Pack: "${packName}"`, "Отчет по view:"];
+
+  viewGraph.roots.forEach((root) => {
+    appendViewExportReportLines(root, viewGraph, lines, 0);
+  });
+
+  return lines.join("\n");
+}
+
+/**
+ * Добавляет одну строку отчета и рекурсивно обходит вложенные renderable children.
+ */
+function appendViewExportReportLines(descriptor, viewGraph, lines, depth) {
+  const indent = "  ".repeat(depth);
+  const childCount = getVisibleDirectChildren(descriptor.node).length;
+
+  lines.push(`${indent}- view ${descriptor.name} : ${childCount} детей`);
+
+  descriptor.childRenderableNodeIds.forEach((childNodeId) => {
+    const childDescriptor = viewGraph.byNodeId.get(childNodeId);
+    if (childDescriptor) {
+      appendViewExportReportLines(childDescriptor, viewGraph, lines, depth + 1);
+    }
+  });
+}
+
+/**
  * ============================================================================
  * Assets Collection
  * ============================================================================
  *
- * Collects asset children from top-level view/button trees and copies them into an
- * assets* frame without changing the original view hierarchy.
+ * Collects asset children from top-level renderable trees and copies them into an
+ * assets* frame without changing the original hierarchy.
  */
 
 /**
- * Собирает ассеты из top-level view/button деревьев в assets-frame.
+ * Собирает ассеты из top-level renderable деревьев в assets-frame.
  */
 async function collectAssetsFromViewTrees() {
   const assetsFrameResult = getOrCreateAssetsFrame();
@@ -349,7 +387,7 @@ function findLastFrameOnCurrentPage() {
 }
 
 /**
- * Строит graph renderable view/button узлов текущей страницы.
+ * Строит graph renderable view/button/text узлов текущей страницы.
  */
 function buildViewGraphFromCurrentPage() {
   const graph = {
@@ -367,12 +405,12 @@ function buildViewGraphFromCurrentPage() {
 }
 
 /**
- * Ищет корневые view/button узлы вне assets* frame.
+ * Ищет корневые renderable узлы вне assets* frame.
  */
 function collectRootViewDescriptorFromSubtree(node, graph, usedFunctionNames) {
   if (!node || node.visible === false || isAssetsFrameNode(node)) return;
 
-  if (isRenderableViewNode(node)) {
+  if (isRenderableNode(node)) {
     const descriptor = appendViewDescriptorToGraph(node, null, graph, usedFunctionNames);
     if (descriptor) {
       graph.roots.push(descriptor);
@@ -388,37 +426,44 @@ function collectRootViewDescriptorFromSubtree(node, graph, usedFunctionNames) {
 }
 
 /**
- * Добавляет view/button node в graph и рекурсивно связывает direct child views.
+ * Добавляет renderable node в graph и рекурсивно связывает direct child renderables.
  */
 function appendViewDescriptorToGraph(node, parentDescriptor, graph, usedFunctionNames) {
   if (!node || node.visible === false) return null;
 
-  const kind = getViewKind(node);
+  const kind = getRenderableKind(node);
   if (!kind) return null;
 
   const existingDescriptor = graph.byNodeId.get(node.id);
   if (existingDescriptor) return existingDescriptor;
 
   const baseFunctionName = toCamelCase(node.name || node.id) || kind;
+  const functionNameBase = kind === "text" ? `${baseFunctionName}TextView` : baseFunctionName;
+  const baseText = kind === "text" ? String(node.characters || "") : undefined;
   const descriptor = {
     node,
     nodeId: node.id,
     name: node.name || node.id,
     kind,
-    functionName: createUniqueFunctionName(baseFunctionName, usedFunctionNames),
+    functionName: createUniqueFunctionName(functionNameBase, usedFunctionNames),
+    dataName: "",
     parentNodeId: parentDescriptor ? parentDescriptor.nodeId : null,
-    childViewNodeIds: [],
+    childRenderableNodeIds: [],
+    baseText,
+    textStyle: kind === "text" ? buildTextStyleSnapshotFromNode(node) : undefined,
   };
+
+  descriptor.dataName = `${descriptor.functionName}Data`;
 
   graph.byNodeId.set(descriptor.nodeId, descriptor);
   graph.allViews.push(descriptor);
 
   getVisibleDirectChildren(node).forEach((child) => {
-    if (!isRenderableViewNode(child)) return;
+    if (!isRenderableNode(child)) return;
 
     const childDescriptor = appendViewDescriptorToGraph(child, descriptor, graph, usedFunctionNames);
     if (childDescriptor) {
-      descriptor.childViewNodeIds.push(childDescriptor.nodeId);
+      descriptor.childRenderableNodeIds.push(childDescriptor.nodeId);
     }
   });
 
@@ -449,7 +494,7 @@ function collectAssetSourceNodesFromViewGraph(viewGraph) {
 }
 
 /**
- * Возвращает asset nodes для одного view/button.
+ * Возвращает asset nodes для одного renderable node.
  * Leaf button экспортируется как собственный single-asset view.
  */
 function getAssetSourceNodesForViewDescriptor(descriptor) {
@@ -473,7 +518,7 @@ function getAssetSourceNodesForViewDescriptor(descriptor) {
 function shouldUseSelfAssetForViewDescriptor(descriptor, directAssetChildren) {
   return descriptor.kind === "button" &&
     directAssetChildren.length === 0 &&
-    descriptor.childViewNodeIds.length === 0;
+    descriptor.childRenderableNodeIds.length === 0;
 }
 
 /**
@@ -628,11 +673,11 @@ async function runViewExportFromCurrentPage() {
   const viewGraph = buildViewGraphFromCurrentPage();
 
   if (viewGraph.roots.length === 0) {
-    throw new Error('На текущей странице не найдено узлов, имя которых начинается с "view" или "button"');
+    throw new Error('На текущей странице не найдено узлов, имя которых начинается с "view", "button" или "text"');
   }
 
   const packName = slugify(assetsFrameResult.frame.name || ASSETS_CORE_FRAME_NAME);
-  postUiLog(`Старт page-level экспорта. Pack: "${packName}", View roots: ${viewGraph.roots.length}, View nodes: ${viewGraph.allViews.length}`);
+  postUiLog(formatViewExportReport(packName, viewGraph));
 
   const exportPlan = buildViewExportPlan({
     viewGraph,
@@ -845,7 +890,7 @@ async function runLegacyExportFromSelection() {
 }
 
 /**
- * Строит план page-level экспорта по view/button graph и assets-frame.
+ * Строит план page-level экспорта по renderable graph и assets-frame.
  */
 function buildViewExportPlan(props) {
   const { viewGraph, assetsFrame } = props;
@@ -981,20 +1026,21 @@ function collectAssetsFrameNodesByName(assetsFrame) {
 }
 
 /**
- * Строит data для root view в manifest.
+ * Строит data для root renderable node в manifest.
  */
 function buildViewExportRootData(viewNode) {
-  const bounds = readAbsoluteBoundsOrThrow(viewNode, "View не имеет absoluteBoundingBox");
+  const bounds = readViewBoundsOrThrow(viewNode, "Renderable node не имеет bounds");
   return {
     nodeId: viewNode.id,
     name: viewNode.name || viewNode.id,
+    kind: isRenderableTextNode(viewNode) ? "text" : getRenderableKind(viewNode) || "view",
     width: Math.round(bounds.width),
     height: Math.round(bounds.height),
   };
 }
 
 /**
- * Строит manifest.views из page-level view/button graph.
+ * Строит manifest.views из page-level view/button/text graph.
  */
 function buildManifestViews(props) {
   const { viewGraph, exportedAssetsByName, skipped } = props;
@@ -1002,12 +1048,12 @@ function buildManifestViews(props) {
 
   viewGraph.allViews.forEach((viewDescriptor) => {
     const viewNode = viewDescriptor.node;
-    const viewBounds = readAbsoluteBounds(viewNode);
+    const viewBounds = readViewBounds(viewNode);
     if (!viewBounds) {
       skipped.push({
         nodeId: viewNode.id,
         name: viewNode.name || viewNode.id,
-        reason: "View has no absoluteBoundingBox",
+        reason: "Renderable node has no bounds",
       });
       return;
     }
@@ -1024,11 +1070,15 @@ function buildManifestViews(props) {
       nodeId: viewDescriptor.nodeId,
       name: viewDescriptor.name,
       functionName: viewDescriptor.functionName,
+      dataName: viewDescriptor.dataName,
+      kind: viewDescriptor.kind,
       button: viewDescriptor.kind === "button" ? true : undefined,
       x: Math.round(viewBounds.x),
       y: Math.round(viewBounds.y),
       width: Math.round(viewBounds.width),
       height: Math.round(viewBounds.height),
+      baseText: viewDescriptor.kind === "text" ? viewDescriptor.baseText : undefined,
+      textStyle: viewDescriptor.kind === "text" ? viewDescriptor.textStyle : undefined,
       children,
     });
   });
@@ -1037,7 +1087,7 @@ function buildManifestViews(props) {
 }
 
 /**
- * Строит ordered children для одного manifest view.
+ * Строит ordered children для одного manifest renderable.
  */
 function buildManifestChildrenForView(props) {
   const {
@@ -1052,7 +1102,7 @@ function buildManifestChildrenForView(props) {
   const directAssetChildren = directChildren.filter((child) => isAssetCandidateNode(child));
 
   directChildren.forEach((child) => {
-    if (isRenderableViewNode(child)) {
+    if (isRenderableNode(child)) {
       addManifestViewChild({
         children,
         child,
@@ -1121,7 +1171,7 @@ function addManifestAssetChild(props) {
 }
 
 /**
- * Добавляет nested view child в manifest view.
+ * Добавляет nested renderable child в manifest view.
  */
 function addManifestViewChild(props) {
   const { children, child, parentBounds, viewGraph, skipped } = props;
@@ -1133,7 +1183,23 @@ function addManifestViewChild(props) {
     skipped.push({
       nodeId: child.id,
       name: child.name || child.id,
-      reason: "View has no absoluteBoundingBox",
+      reason: "Renderable node has no bounds",
+    });
+    return;
+  }
+
+  if (childDescriptor.kind === "text") {
+    children.push({
+      type: "text",
+      nodeId: child.id,
+      name: child.name || child.id,
+      textNodeId: childDescriptor.nodeId,
+      textFunctionName: childDescriptor.functionName,
+      textDataName: childDescriptor.dataName,
+      x: Math.round(childBounds.x - parentBounds.x),
+      y: Math.round(childBounds.y - parentBounds.y),
+      width: Math.round(childBounds.width),
+      height: Math.round(childBounds.height),
     });
     return;
   }
@@ -1144,6 +1210,7 @@ function addManifestViewChild(props) {
     name: child.name || child.id,
     viewNodeId: childDescriptor.nodeId,
     viewFunctionName: childDescriptor.functionName,
+    viewDataName: childDescriptor.dataName,
     x: Math.round(childBounds.x - parentBounds.x),
     y: Math.round(childBounds.y - parentBounds.y),
     width: Math.round(childBounds.width),
@@ -1335,10 +1402,92 @@ function readAbsoluteBounds(node) {
 }
 
 /**
- * Читает bounds для renderable view/button контейнера.
+ * Читает bounds для renderable контейнера.
  */
 function readViewBounds(node) {
   return readAbsoluteBounds(node) || readExportBounds(node);
+}
+
+/**
+ * Читает bounds для renderable node или бросает ошибку, если их нет.
+ */
+function readViewBoundsOrThrow(node, errorMessage) {
+  const bounds = readViewBounds(node);
+  if (!bounds) throw new Error(errorMessage);
+  return bounds;
+}
+
+/**
+ * Возвращает snapshot текстового стиля для generated Phaser TextStyle.
+ */
+function buildTextStyleSnapshotFromNode(node) {
+  const style = {};
+  const fontName = node && node.fontName;
+
+  if (fontName && fontName !== figma.mixed && typeof fontName.family === "string" && fontName.family) {
+    style.fontFamily = fontName.family;
+  }
+
+  const fontSize = node && node.fontSize;
+  if (typeof fontSize === "number" && Number.isFinite(fontSize)) {
+    style.fontSize = Math.round(fontSize);
+  }
+
+  const fillColor = readFirstSolidPaintColor(node && node.fills);
+  if (fillColor) {
+    style.color = fillColor;
+  }
+
+  const strokeWeight = node && node.strokeWeight;
+  if (typeof strokeWeight === "number" && Number.isFinite(strokeWeight)) {
+    style.strokeThickness = Math.round(strokeWeight);
+  }
+
+  const strokeColor = readFirstSolidPaintColor(node && node.strokes);
+  if (strokeColor) {
+    style.stroke = strokeColor;
+  }
+
+  return style;
+}
+
+/**
+ * Возвращает первый solid color в массиве paints, если он есть.
+ */
+function readFirstSolidPaintColor(paints) {
+  if (!Array.isArray(paints)) return null;
+
+  for (const paint of paints) {
+    if (!paint || paint.visible === false || paint.type !== "SOLID" || !paint.color) {
+      continue;
+    }
+
+    const opacity = typeof paint.opacity === "number" ? paint.opacity : 1;
+    return rgbaToCssColor(paint.color.r, paint.color.g, paint.color.b, opacity);
+  }
+
+  return null;
+}
+
+/**
+ * Преобразует Figma rgba в CSS color string.
+ */
+function rgbaToCssColor(r, g, b, a = 1) {
+  const to255 = (value) => Math.max(0, Math.min(255, Math.round(Number(value || 0) * 255)));
+  const red = to255(r);
+  const green = to255(g);
+  const blue = to255(b);
+  const alpha = Math.max(0, Math.min(1, Number(a)));
+
+  if (alpha < 1) {
+    return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
+  }
+
+  const hex = [red, green, blue]
+    .map((value) => value.toString(16).padStart(2, "0"))
+    .join("");
+
+  return `#${hex}`;
 }
 
 /**
@@ -1583,7 +1732,7 @@ figma.ui.onmessage = async (msg) => {
     try {
       const result = await collectAssetsFromViewTrees();
       postUiLog(
-        `Ассеты собраны: view/button корней ${result.viewRootsCount}, view nodes ${result.viewNodesCount}, найдено ${result.sourceNodesCount}, скопировано ${result.copiedNodesCount} в "${result.assetsFrameName}"`
+        `Ассеты собраны: view/button/text корней ${result.viewRootsCount}, view/button/text узлов ${result.viewNodesCount}, найдено ${result.sourceNodesCount}, скопировано ${result.copiedNodesCount} в "${result.assetsFrameName}"`
       );
       figma.ui.postMessage({
         type: "ASSETS_COLLECTION_DONE",
