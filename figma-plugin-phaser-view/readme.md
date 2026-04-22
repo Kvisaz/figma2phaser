@@ -205,11 +205,13 @@ export const viewMainData: IAutoViewData = {
 Любой видимый `TEXT`-узел, имя которого начинается с `text`, считается отдельным renderable text view:
 
 - в `manifest.views` у него будет `"kind": "text"`;
-- в generated `*.text.ts` у него будет отдельная factory-функция и локальный `localeMap`;
+- в generated `*.text.ts` все тексты лежат в едином объекте `[packCamel]Texts`;
+- ключи `[packCamel]Texts` совпадают с точными именами Figma-узлов; небезопасные ключи генерируются quoted, например `'text 2'`;
+- отдельные text factory-функции не генерируются;
+- `localeMap` инлайнится прямо в объект text data;
 - runtime `createTextView()` рендерит его как обычный `Phaser.GameObjects.Text`;
 - из Figma в style попадают `fontFamily`, `fontSize`, `color`, `strokeThickness` и `stroke`;
-- рядом с локальным map ставится маркер `/** @localise-map */` для быстрого поиска;
-- `scene.events.emit("onLocaleChange", { locale })` переключает текст по ключу локали из локального map.
+- `scene.events.emit("onLocaleChange", { locale })` переключает текст по ключу локали из inline `localeMap`.
 
 Если нужен runtime override текста, `options.text` заменяет стартовое значение, а `options.style` дополняет style-снимок из Figma. `options.locale` задает стартовый ключ локали.
 

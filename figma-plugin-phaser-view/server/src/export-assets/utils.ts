@@ -82,14 +82,12 @@ export function addAssetNine(props: IAddAssetNineProps): Phaser.GameObjects.Nine
 function resolveLocaleText(
   localeMap: IAutoTextData["localeMap"],
   locale?: string,
-  fallbackText = "",
 ): string {
   const requestedLocale = String(locale || "en");
   const nextText =
     localeMap[requestedLocale] ??
     localeMap.en ??
     localeMap.ru ??
-    fallbackText ??
     "";
 
   return String(nextText || "");
@@ -110,7 +108,7 @@ export function createTextView(
   const hasStaticTextOverride = typeof options.text === "string";
   const initialText = hasStaticTextOverride
     ? String(options.text || "")
-    : resolveLocaleText(textData.localeMap, options.locale, textData.baseText);
+    : resolveLocaleText(textData.localeMap, options.locale);
 
   const textObject = scene.add.text(0, 0, initialText, style);
   textObject.name = textData.name || "";
@@ -125,7 +123,7 @@ export function createTextView(
           : typeof payload === "string"
             ? payload
             : undefined;
-      textObject.setText(resolveLocaleText(textData.localeMap, locale, textData.baseText));
+      textObject.setText(resolveLocaleText(textData.localeMap, locale));
     };
 
     scene.events.on("onLocaleChange", localeListener);

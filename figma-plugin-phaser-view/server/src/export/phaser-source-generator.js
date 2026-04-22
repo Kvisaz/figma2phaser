@@ -51,6 +51,22 @@ function detectNinePadding(rawName) {
 }
 
 /**
+ * Builds an object key that keeps the exact Figma layer name.
+ */
+function buildObjectKey(rawName) {
+    const key = String(rawName || "");
+    if (/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(key)) {
+        return key;
+    }
+
+    return `'${key
+        .replace(/\\/g, "\\\\")
+        .replace(/'/g, "\\'")
+        .replace(/\r/g, "\\r")
+        .replace(/\n/g, "\\n")}'`;
+}
+
+/**
  * Converts manifest items into sorted generated asset entries.
  */
 function buildAssetEntries(manifest) {
@@ -207,8 +223,8 @@ function buildViewEntries(manifest, assetEntries) {
                     return {
                         ...child,
                         type: "text",
+                        textName: childEntry.name,
                         textFunctionName: childEntry.functionName,
-                        textDataName: dataName,
                     };
                 }
 
@@ -229,25 +245,6 @@ function buildViewEntries(manifest, assetEntries) {
             children,
         };
     });
-}
-
-/**
- * Собирает все text child data names для импорта в view.ts.
- */
-function collectTextChildImportNames(viewEntries) {
-    const result = new Set();
-
-    viewEntries.forEach((view) => {
-        if (!Array.isArray(view.children)) return;
-
-        view.children.forEach((child) => {
-            if (child.type !== "text") return;
-            if (!child.textDataName) return;
-            result.add(child.textDataName);
-        });
-    });
-
-    return Array.from(result).sort((a, b) => a.localeCompare(b));
 }
 
 /**
@@ -292,7 +289,7 @@ function buildViewChildBlock(child, packCamel) {
     }
 
     if (child.type === "text") {
-        return `    {\n      type: "text",\n      text: ${child.textDataName},\n      x: ${Number(child.x || 0)},\n      y: ${Number(child.y || 0)},\n      width: ${Number(child.width || 0)},\n      height: ${Number(child.height || 0)},\n    },`;
+        return `    {\n      type: "text",\n      text: ${packCamel}Texts[${JSON.stringify(String(child.textName || child.name || ""))}],\n      x: ${Number(child.x || 0)},\n      y: ${Number(child.y || 0)},\n      width: ${Number(child.width || 0)},\n      height: ${Number(child.height || 0)},\n    },`;
     }
 
     return `    {\n      type: "asset",\n      asset: ${packCamel}AutoAssets.${child.assetKey},\n      x: ${Number(child.x || 0)},\n      y: ${Number(child.y || 0)},\n      width: ${Number(child.width || 0)},\n      height: ${Number(child.height || 0)},\n    },`;
@@ -341,14 +338,22 @@ function buildTextLocaleMapLiteral(baseText) {
 }
 
 /**
- * Generates one text child data block.
+ * Returns true if any generated view contains direct text children.
  */
-function buildTextBlock(entry) {
-    const localeMapName = `${entry.functionName}LocaleMap`;
+function hasTextChildren(viewEntries) {
+    return viewEntries.some((view) =>
+        Array.isArray(view.children) && view.children.some((child) => child.type === "text")
+    );
+}
+
+/**
+ * Generates one text data object field.
+ */
+function buildTextObjectField(entry) {
     const styleLiteral = buildTextStyleLiteral(entry.textStyle);
     const localeMapLiteral = buildTextLocaleMapLiteral(entry.baseText);
 
-    return `/** @localise-map */\nexport const ${localeMapName} = ${localeMapLiteral};\n\nexport const ${entry.dataName}: IAutoTextData = {\n  name: ${JSON.stringify(entry.functionName)},\n  x: ${Number(entry.x || 0)},\n  y: ${Number(entry.y || 0)},\n  width: ${Number(entry.width || 0)},\n  height: ${Number(entry.height || 0)},\n  baseText: ${JSON.stringify(String(entry.baseText || ""))},\n  localeMap: ${localeMapName},\n  style: ${styleLiteral},\n};\n\nexport function ${entry.functionName}(scene: Phaser.Scene, options?: ITextViewOptions): Phaser.GameObjects.Text {\n  return createTextView(scene, ${entry.dataName}, options);\n}\n`;
+    return `  ${buildObjectKey(entry.name)}: {\n    name: ${JSON.stringify(String(entry.name || ""))},\n    x: ${Number(entry.x || 0)},\n    y: ${Number(entry.y || 0)},\n    width: ${Number(entry.width || 0)},\n    height: ${Number(entry.height || 0)},\n    localeMap: ${localeMapLiteral.replace(/\n/g, "\n    ")},\n    style: ${styleLiteral.replace(/\n/g, "\n  ")},\n  },`;
 }
 
 /**
@@ -359,9 +364,8 @@ function buildViewsTs(props) {
     const resolvedEntries = sortViewEntriesForDeclarations(
         (Array.isArray(viewEntries) ? viewEntries : []).filter((entry) => entry.kind !== "text")
     );
-    const textImportNames = collectTextChildImportNames(resolvedEntries);
-    const textImportBlock = textImportNames.length > 0
-        ? `import {\n  ${textImportNames.join(",\n  ")}\n} from "./${packFileName}.text";\n`
+    const textImportBlock = hasTextChildren(resolvedEntries)
+        ? `import { ${packCamel}Texts } from "./${packFileName}.text";\n`
         : "";
     const viewBlocks = resolvedEntries.map((view) => {
         const childBlocks = view.children.map((child) => buildViewChildBlock(child, packCamel));
@@ -380,23 +384,24 @@ ${viewBlocks.join("\n")}
 }
 
 /**
- * Generates [packName].text.ts with text factory data and constructors.
+ * Generates [packName].text.ts with a single text data registry.
  */
 function buildTextTs(props) {
-    const { textEntries } = props;
+    const { packCamel, textEntries } = props;
     const resolvedEntries = Array.isArray(textEntries) ? textEntries.filter((entry) => entry.kind === "text") : [];
 
     if (resolvedEntries.length === 0) {
         return null;
     }
 
-    const textBlocks = resolvedEntries.map((entry) => buildTextBlock(entry));
+    const textFields = resolvedEntries.map((entry) => buildTextObjectField(entry));
 
     return `// This file is auto-generated by figma2assets plugin. Do not edit manually.
-import { createTextView } from "./utils";
-import { IAutoTextData, ITextViewOptions } from "./types";
+import { IAutoTextData } from "./types";
 
-${textBlocks.join("\n")}
+export const ${packCamel}Texts: { readonly [name: string]: IAutoTextData } = {
+${textFields.join("\n")}
+};
 `;
 }
 
@@ -433,6 +438,7 @@ function buildPhaserSceneSources(props) {
         }),
         textTs: buildTextTs({
             packName,
+            packCamel,
             packFileName,
             textEntries: renderableEntries,
         }),
@@ -441,18 +447,19 @@ function buildPhaserSceneSources(props) {
 
 module.exports = {
     buildAtlasFilePath,
+    buildObjectKey,
     createUniqueAssetKey,
     detectNinePadding,
     buildAssetEntries,
     buildAssetsTs,
     buildSceneTs,
     buildViewEntries,
-    collectTextChildImportNames,
     sortViewEntriesForDeclarations,
     buildViewChildBlock,
     buildTextStyleLiteral,
     buildTextLocaleMapLiteral,
-    buildTextBlock,
+    hasTextChildren,
+    buildTextObjectField,
     buildViewsTs,
     buildTextTs,
     buildPhaserSceneSources,

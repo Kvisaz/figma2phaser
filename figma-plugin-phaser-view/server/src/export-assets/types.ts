@@ -83,7 +83,6 @@ export interface IAutoTextData {
   readonly y: number;
   readonly width: number;
   readonly height: number;
-  readonly baseText: string;
   readonly localeMap: IAutoTextLocaleMap;
   readonly style: Partial<Phaser.Types.GameObjects.Text.TextStyle>;
 }
