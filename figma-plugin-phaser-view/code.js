@@ -129,10 +129,10 @@ function scanPageChildren(nodes, result) {
 }
 
 /**
- * Проверяет, начинается ли имя любого объекта с "view".
+ * Проверяет, начинается ли имя view-like объекта с "view" или "button".
  */
 function isViewNamedNode(node) {
-  return startsWithIgnoreCase(node && node.name, "view");
+  return startsWithIgnoreCase(node && node.name, "view") || startsWithIgnoreCase(node && node.name, "button");
 }
 
 /**
@@ -921,6 +921,7 @@ function buildManifestViews(props) {
     const baseFunctionName = toCamelCase(viewNode.name || viewNode.id) || "view";
     const functionName = createUniqueFunctionName(baseFunctionName, usedFunctionNames);
     const children = [];
+    const isButtonView = startsWithIgnoreCase(viewNode.name, "button");
 
     if (hasChildren(viewNode)) {
       viewNode.children.forEach((child) => {
@@ -962,6 +963,7 @@ function buildManifestViews(props) {
       nodeId: viewNode.id,
       name: viewNode.name || viewNode.id,
       functionName,
+      button: isButtonView ? true : undefined,
       x: Math.round(viewBounds.x),
       y: Math.round(viewBounds.y),
       width: Math.round(viewBounds.width),

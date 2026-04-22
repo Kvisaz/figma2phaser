@@ -68,6 +68,9 @@ export function addAssetNine(props: IAddAssetNineProps): Phaser.GameObjects.Nine
 export function createView(scene: Phaser.Scene, view: IAutoViewData): Phaser.GameObjects.Container {
   const root = con(scene, 0, 0, view.width, view.height);
   root.name = view.name || "";
+  if (view.button) {
+    root.setData("button", true);
+  }
 
   view.children.forEach((child) => {
     root.add(renderViewChild(scene, child));
