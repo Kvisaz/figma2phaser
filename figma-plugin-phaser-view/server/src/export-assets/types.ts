@@ -36,6 +36,9 @@ export interface PosObject {
   setPosition(x: number, y: number): this;
 }
 
+
+export type PosGameObject = Phaser.GameObjects.GameObject & PosObject;
+
 export interface IAutoViewAssetChildData {
   readonly type?: "asset";
   readonly asset: IAutoAssetData;
