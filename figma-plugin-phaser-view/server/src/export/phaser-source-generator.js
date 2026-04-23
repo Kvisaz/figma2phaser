@@ -288,11 +288,7 @@ function sortViewEntriesForDeclarations(viewEntries) {
  */
 function buildViewChildBlock(child, packCamel) {
     if (child.type === "view") {
-        const viewRef = child.viewKind === "button"
-            ? `${packCamel}Buttons[${JSON.stringify(String(child.viewName || child.name || ""))}]`
-            : child.viewDataName;
-
-        return `    {\n      type: "view",\n      view: ${viewRef},\n      x: ${Number(child.x || 0)},\n      y: ${Number(child.y || 0)},\n      width: ${Number(child.width || 0)},\n      height: ${Number(child.height || 0)},\n    },`;
+        return `    {\n      type: "view",\n      view: ${child.viewDataName},\n      x: ${Number(child.x || 0)},\n      y: ${Number(child.y || 0)},\n      width: ${Number(child.width || 0)},\n      height: ${Number(child.height || 0)},\n    },`;
     }
 
     if (child.type === "text") {
@@ -354,6 +350,24 @@ function hasTextChildren(viewEntries) {
 }
 
 /**
+ * Returns true if any generated view contains direct asset children.
+ */
+function hasAssetChildren(viewEntries) {
+    return viewEntries.some((view) =>
+        Array.isArray(view.children) && view.children.some((child) => (child.type || "asset") === "asset")
+    );
+}
+
+/**
+ * Returns true if any generated view contains direct nested view children.
+ */
+function hasViewChildren(viewEntries) {
+    return viewEntries.some((view) =>
+        Array.isArray(view.children) && view.children.some((child) => child.type === "view")
+    );
+}
+
+/**
  * Generates one text data object field.
  */
 function buildTextObjectField(entry) {
@@ -374,38 +388,222 @@ function buildViewDataLiteral(view, packCamel) {
 }
 
 /**
- * Generates one button data object field.
+ * Builds a large generated section header.
  */
-function buildButtonObjectField(button, packCamel) {
-    return `  ${buildObjectKey(button.name)}: ${buildViewDataLiteral(button, packCamel).replace(/\n/g, "\n  ")},`;
+function buildSectionHeader(title) {
+    return `/**************\n *\n * ${title}\n *\n **************/`;
 }
 
 /**
- * Generates [packName].view.ts with declarative view/button/text data and constructors.
+ * Creates a unique local child variable name for one generated function.
+ */
+function createUniqueLocalName(rawName, used) {
+    const base = toCamelCase(rawName) || "child";
+    let next = `${base}Child`;
+    let suffix = 2;
+
+    while (used.has(next)) {
+        next = `${base}Child${suffix}`;
+        suffix += 1;
+    }
+
+    used.add(next);
+    return next;
+}
+
+/**
+ * Converts an already-safe generated identifier to PascalCase without re-normalizing it.
+ */
+function capitalizeIdentifier(identifier) {
+    const value = String(identifier || "");
+    return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+/**
+ * Builds the exported constants block for all view/button data.
+ */
+function buildViewConstantsBlock(viewEntries, packCamel) {
+    const blocks = viewEntries.map((view) => {
+        return `export const ${view.dataName}: IAutoViewData = ${buildViewDataLiteral(view, packCamel)};`;
+    });
+
+    return `${buildSectionHeader("CONSTANTS")}\n\n${blocks.join("\n\n")}`;
+}
+
+/**
+ * Finds top-level generated view entries for section grouping.
+ */
+function findRootViewEntries(viewEntries) {
+    const referencedFunctionNames = new Set();
+
+    viewEntries.forEach((view) => {
+        if (!Array.isArray(view.children)) return;
+
+        view.children.forEach((child) => {
+            if (child.type !== "view") return;
+            if (!child.viewFunctionName) return;
+            referencedFunctionNames.add(child.viewFunctionName);
+        });
+    });
+
+    return viewEntries.filter((view) => !referencedFunctionNames.has(view.functionName));
+}
+
+/**
+ * Collects nested view/button entries for one root section.
+ */
+function collectNestedViewEntries(root, entriesByFunctionName) {
+    const result = [];
+    const seen = new Set();
+
+    function visit(entry) {
+        if (!entry || !Array.isArray(entry.children)) return;
+
+        entry.children.forEach((child) => {
+            if (child.type !== "view") return;
+
+            const childEntry = entriesByFunctionName.get(child.viewFunctionName);
+            if (!childEntry) return;
+
+            if (!seen.has(childEntry.functionName)) {
+                seen.add(childEntry.functionName);
+                result.push(childEntry);
+            }
+            visit(childEntry);
+        });
+    }
+
+    visit(root);
+    return result;
+}
+
+/**
+ * Builds parent-prefixed helper names for nested view/button functions.
+ */
+function buildNestedHelperNames(root, nestedEntries) {
+    const used = new Set([root.functionName]);
+    const result = new Map();
+
+    nestedEntries.forEach((entry) => {
+        const base = `${root.functionName}${capitalizeIdentifier(entry.functionName) || "View"}`;
+        let next = base;
+        let suffix = 2;
+
+        while (used.has(next)) {
+            next = `${base}${suffix}`;
+            suffix += 1;
+        }
+
+        used.add(next);
+        result.set(entry.functionName, next);
+    });
+
+    return result;
+}
+
+/**
+ * Builds one expanded child creation block.
+ */
+function buildExpandedChildLines(child, index, parentDataName, helperNamesByFunctionName, usedLocalNames) {
+    const childVarName = createUniqueLocalName(child.name, usedLocalNames);
+    const childDataRef = `${parentDataName}.children[${index}]`;
+
+    if (child.type === "view") {
+        const helperName = helperNamesByFunctionName.get(child.viewFunctionName);
+
+        return `  const ${childVarName} = ${helperName}(scene);\n  addNestedViewToView(\n    view,\n    ${childVarName},\n    ${parentDataName},\n    ${childDataRef} as IAutoViewRefChildData,\n  );`;
+    }
+
+    if (child.type === "text") {
+        return `  const ${childVarName} = createTextChild(\n    scene,\n    ${childDataRef} as IAutoTextRefChildData,\n  );\n  addChildToView(view, ${childVarName}, ${parentDataName});`;
+    }
+
+    return `  const ${childVarName} = createAssetChild(\n    scene,\n    ${childDataRef} as IAutoViewAssetChildData,\n  );\n  addChildToView(view, ${childVarName}, ${parentDataName});`;
+}
+
+/**
+ * Builds one expanded view/button creation function.
+ */
+function buildExpandedViewFunction(props) {
+    const { functionName, view, helperNamesByFunctionName } = props;
+    const usedLocalNames = new Set();
+    const childBlocks = Array.isArray(view.children)
+        ? view.children.map((child, index) =>
+            buildExpandedChildLines(child, index, view.dataName, helperNamesByFunctionName, usedLocalNames)
+        )
+        : [];
+    const childSection = childBlocks.length > 0 ? `\n\n${childBlocks.join("\n\n")}` : "";
+
+    return `export function ${functionName}(scene: Phaser.Scene): Phaser.GameObjects.Container {\n  const view = createContainerFromViewData(scene, ${view.dataName});${childSection}\n\n  return view;\n}`;
+}
+
+/**
+ * Builds one root view section with parent-prefixed nested helpers.
+ */
+function buildViewSection(root, entriesByFunctionName) {
+    const nestedEntries = collectNestedViewEntries(root, entriesByFunctionName);
+    const helperNamesByFunctionName = buildNestedHelperNames(root, nestedEntries);
+    const functions = [
+        buildExpandedViewFunction({
+            functionName: root.functionName,
+            view: root,
+            helperNamesByFunctionName,
+        }),
+        ...nestedEntries.map((entry) =>
+            buildExpandedViewFunction({
+                functionName: helperNamesByFunctionName.get(entry.functionName),
+                view: entry,
+                helperNamesByFunctionName,
+            })
+        ),
+    ];
+
+    return `${buildSectionHeader(`VIEW: ${root.functionName}`)}\n\n${functions.join("\n\n")}`;
+}
+
+/**
+ * Generates [packName].view.ts with declarative constants and expanded view functions.
  */
 function buildViewsTs(props) {
     const { packCamel, packFileName, viewEntries } = props;
     const resolvedEntries = sortViewEntriesForDeclarations(
         (Array.isArray(viewEntries) ? viewEntries : []).filter((entry) => entry.kind !== "text")
     );
-    const buttonEntries = resolvedEntries.filter((entry) => entry.kind === "button");
-    const viewOnlyEntries = resolvedEntries.filter((entry) => entry.kind !== "button");
+    const entriesByFunctionName = new Map(resolvedEntries.map((entry) => [entry.functionName, entry]));
+    const rootEntries = findRootViewEntries(resolvedEntries);
+    const assetImportBlock = hasAssetChildren(resolvedEntries)
+        ? `import { ${packCamel}AutoAssets } from "./${packFileName}-assets";\n`
+        : "";
     const textImportBlock = hasTextChildren(resolvedEntries)
         ? `import { ${packCamel}Texts } from "./${packFileName}.text";\n`
         : "";
-    const buttonBlock = buttonEntries.length > 0
-        ? `export const ${packCamel}Buttons: { readonly [name: string]: IAutoViewData } = {\n${buttonEntries.map((button) => buildButtonObjectField(button, packCamel)).join("\n")}\n};\n\n`
-        : "";
-    const viewBlocks = viewOnlyEntries.map((view) => {
-        return `export const ${view.dataName}: IAutoViewData = ${buildViewDataLiteral(view, packCamel)};\n\nexport function ${view.functionName}(scene: Phaser.Scene): Phaser.GameObjects.Container {\n  return createView(scene, ${view.dataName});\n}\n`;
-    });
+    const utilsImports = [
+        "createContainerFromViewData",
+        ...(hasAssetChildren(resolvedEntries) || hasTextChildren(resolvedEntries) ? ["addChildToView"] : []),
+        ...(hasAssetChildren(resolvedEntries) ? ["createAssetChild"] : []),
+        ...(hasTextChildren(resolvedEntries) ? ["createTextChild"] : []),
+        ...(hasViewChildren(resolvedEntries) ? ["addNestedViewToView"] : []),
+    ];
+    const typeImports = [
+        "IAutoViewData",
+        ...(hasAssetChildren(resolvedEntries) ? ["IAutoViewAssetChildData"] : []),
+        ...(hasTextChildren(resolvedEntries) ? ["IAutoTextRefChildData"] : []),
+        ...(hasViewChildren(resolvedEntries) ? ["IAutoViewRefChildData"] : []),
+    ];
+    const constantsBlock = buildViewConstantsBlock(resolvedEntries, packCamel);
+    const viewSections = rootEntries.map((root) => buildViewSection(root, entriesByFunctionName));
 
     return `// This file is auto-generated by figma2assets plugin. Do not edit manually.
-import { ${packCamel}AutoAssets } from "./${packFileName}-assets";
-${textImportBlock}import { createView } from "./utils";
-import { IAutoViewData } from "./types";
+${assetImportBlock}${textImportBlock}import {
+  ${utilsImports.join(",\n  ")}
+} from "./utils";
+import {
+  ${typeImports.join(",\n  ")}
+} from "./types";
 
-${buttonBlock}${viewBlocks.join("\n")}
+${constantsBlock}
+
+${viewSections.join("\n\n")}
 `;
 }
 
@@ -485,9 +683,20 @@ module.exports = {
     buildTextStyleLiteral,
     buildTextLocaleMapLiteral,
     hasTextChildren,
+    hasAssetChildren,
+    hasViewChildren,
     buildTextObjectField,
     buildViewDataLiteral,
-    buildButtonObjectField,
+    buildSectionHeader,
+    createUniqueLocalName,
+    capitalizeIdentifier,
+    buildViewConstantsBlock,
+    findRootViewEntries,
+    collectNestedViewEntries,
+    buildNestedHelperNames,
+    buildExpandedChildLines,
+    buildExpandedViewFunction,
+    buildViewSection,
     buildViewsTs,
     buildTextTs,
     buildPhaserSceneSources,

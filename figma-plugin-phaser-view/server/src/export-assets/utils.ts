@@ -2,9 +2,12 @@
 import {
   IAddAssetImageProps,
   IAddAssetNineProps,
+  IAutoTextRefChildData,
   IAutoTextData,
+  IAutoViewAssetChildData,
   IAutoViewChildData,
   IAutoViewData,
+  IAutoViewRefChildData,
   ITextViewOptions,
   PosGameObject,
   PosObject
@@ -34,6 +37,29 @@ export function con(
   const container = scene.add.container(x, y);
   container.setSize(width, height);
   return container;
+}
+
+/**
+ * Creates a container from declarative view data.
+ */
+export function createContainerFromViewData(
+  scene: Phaser.Scene,
+  view: IAutoViewData,
+): Phaser.GameObjects.Container {
+  const root = con(scene, 0, 0, view.width, view.height);
+  root.name = view.name || "";
+  root.setSize(view.width, view.height);
+
+  if(view.button){
+    root.setData("button", true);
+
+    /** должно идти после setSize! **/
+    root.setInteractive({
+      useHandCursor: true,
+    });
+  }
+
+  return root;
 }
 
 /**
@@ -136,30 +162,79 @@ export function createTextView(
 }
 
 /**
+ * Creates an asset child from declarative child data.
+ */
+export function createAssetChild(
+  scene: Phaser.Scene,
+  child: IAutoViewAssetChildData,
+): PosGameObject {
+  if (child.asset.kind === "nine") {
+    return addAssetNine({
+      scene,
+      asset: child.asset,
+      width: child.width,
+      height: child.height,
+      x: child.x,
+      y: child.y,
+    });
+  }
+
+  return addAssetImage({
+    scene,
+    asset: child.asset,
+    x: child.x,
+    y: child.y,
+  });
+}
+
+/**
+ * Creates a text child from declarative child data.
+ */
+export function createTextChild(
+  scene: Phaser.Scene,
+  child: IAutoTextRefChildData,
+): Phaser.GameObjects.Text {
+  const textNode = createTextView(scene, child.text);
+  textNode.setPosition(child.x, child.y);
+  return textNode;
+}
+
+/**
+ * Adds a child to a generated view using the same center correction as createView.
+ */
+export function addChildToView(
+  view: Phaser.GameObjects.Container,
+  child: PosGameObject,
+  viewData: IAutoViewData,
+): void {
+  child.x -= viewData.width/2;
+  child.y -= viewData.height/2;
+  view.add(child);
+}
+
+/**
+ * Positions and adds a nested view child using declarative child data.
+ */
+export function addNestedViewToView(
+  view: Phaser.GameObjects.Container,
+  child: PosGameObject,
+  viewData: IAutoViewData,
+  childData: IAutoViewRefChildData,
+): void {
+  setLeftTop(child, childData.x, childData.y);
+  addChildToView(view, child, viewData);
+}
+
+/**
  * Creates a Phaser container from declarative view data.
  */
 export function createView(scene: Phaser.Scene, view: IAutoViewData): Phaser.GameObjects.Container {
-  const root = con(scene, 0, 0, view.width, view.height);
-  root.name = view.name || "";
-  root.setSize(view.width, view.height);
-
-  if(view.button){
-    root.setData("button", true);
-
-    /** должно идти после setSize! **/
-    root.setInteractive({
-      useHandCursor: true,
-    });
-  }
+  const root = createContainerFromViewData(scene, view);
 
   view.children.forEach((child) => {
     const viewChild = renderViewChild(scene, child);
 
-    /** необходимая коррекция для тогда чтобы композиция
-     * выстраивалась от центра (левого верхнего угла контейенера) **/
-    viewChild.x -= view.width/2;
-    viewChild.y -= view.height/2;
-    root.add(viewChild);
+    addChildToView(root, viewChild, view);
   });
 
   return root;
