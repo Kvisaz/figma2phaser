@@ -311,6 +311,25 @@ function buildViewChildBlock(child, packCamel) {
 }
 
 /**
+ * Схлопывает children в object-модель перед генерацией текста.
+ * При повторе имени Figma последнее поле перетирает предыдущее,
+ * как это сделал бы настоящий JS object literal во время выполнения.
+ */
+function collapseChildrenForObjectLiteral(children) {
+    const childrenByName = new Map();
+
+    (Array.isArray(children) ? children : []).forEach((child) => {
+        const childName = String(child.name || "");
+        if (childrenByName.has(childName)) {
+            childrenByName.delete(childName);
+        }
+        childrenByName.set(childName, child);
+    });
+
+    return Array.from(childrenByName.values());
+}
+
+/**
  * Converts a text style snapshot into generated TS object literal.
  */
 function buildTextStyleLiteral(style) {
@@ -393,7 +412,7 @@ function buildTextObjectField(entry) {
  * Генерирует view data без явной TS-аннотации, чтобы IDE видела поля children.
  */
 function buildViewDataLiteral(view, packCamel) {
-    const childBlocks = view.children.map((child) => {
+    const childBlocks = collapseChildrenForObjectLiteral(view.children).map((child) => {
         return `    ${buildObjectKey(child.name)}: ${buildViewChildBlock(child, packCamel)},`;
     });
     const buttonLine = view.button ? "\n  button: true," : "";
@@ -691,6 +710,7 @@ module.exports = {
     hasAssetChildren,
     hasViewChildren,
     buildTextObjectField,
+    collapseChildrenForObjectLiteral,
     buildViewDataLiteral,
     buildSectionHeader,
     createUniqueLocalName,
