@@ -40,7 +40,7 @@ export interface PosObject {
 export type PosGameObject = Phaser.GameObjects.GameObject & PosObject;
 
 export interface IAutoViewAssetChildData {
-  readonly type?: "asset";
+  readonly type?: string;
   readonly asset: IAutoAssetData;
   readonly x: number;
   readonly y: number;
@@ -48,16 +48,24 @@ export interface IAutoViewAssetChildData {
   readonly height: number;
 }
 
-export interface IAutoViewData {
+export interface IAutoViewLayoutData {
   readonly name?: string;
   readonly button?: true;
   readonly width: number;
   readonly height: number;
-  readonly children: readonly IAutoViewChildData[];
+}
+
+export interface IAutoViewData extends IAutoViewLayoutData {
+  /**
+   * Дети лежат в object literal, чтобы generated constants сохраняли читаемые ключи из Figma.
+   */
+  readonly children: {
+    readonly [name: string]: IAutoViewChildData;
+  };
 }
 
 export interface IAutoViewRefChildData {
-  readonly type: "view";
+  readonly type: string;
   readonly view: IAutoViewData;
   readonly x: number;
   readonly y: number;
@@ -87,8 +95,17 @@ export interface IAutoTextData {
   readonly style: Partial<Phaser.Types.GameObjects.Text.TextStyle>;
 }
 
+export interface IAutoTextChildData {
+  readonly type: string;
+  readonly text: IAutoTextData;
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+}
+
 export interface IAutoTextRefChildData {
-  readonly type: "text";
+  readonly type: string;
   readonly text: IAutoTextData;
   readonly x: number;
   readonly y: number;

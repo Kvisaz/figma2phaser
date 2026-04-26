@@ -51,7 +51,7 @@ function detectNinePadding(rawName) {
 }
 
 /**
- * Builds an object key that keeps the exact Figma layer name.
+ * Строит ключ object literal из имени слоя Figma.
  */
 function buildObjectKey(rawName) {
     const key = String(rawName || "");
@@ -64,6 +64,18 @@ function buildObjectKey(rawName) {
         .replace(/'/g, "\\'")
         .replace(/\r/g, "\\r")
         .replace(/\n/g, "\\n")}'`;
+}
+
+/**
+ * Строит обращение к полю children с учетом quoted keys.
+ */
+function buildObjectAccess(objectRef, rawName) {
+    const key = String(rawName || "");
+    if (/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(key)) {
+        return `${objectRef}.${key}`;
+    }
+
+    return `${objectRef}[${buildObjectKey(key)}]`;
 }
 
 /**
@@ -284,18 +296,18 @@ function sortViewEntriesForDeclarations(viewEntries) {
 }
 
 /**
- * Generates one view child data block.
+ * Генерирует значение одного child внутри children object.
  */
 function buildViewChildBlock(child, packCamel) {
     if (child.type === "view") {
-        return `    {\n      type: "view",\n      view: ${child.viewDataName},\n      x: ${Number(child.x || 0)},\n      y: ${Number(child.y || 0)},\n      width: ${Number(child.width || 0)},\n      height: ${Number(child.height || 0)},\n    },`;
+        return `{\n      type: "view",\n      view: ${child.viewDataName},\n      x: ${Number(child.x || 0)},\n      y: ${Number(child.y || 0)},\n      width: ${Number(child.width || 0)},\n      height: ${Number(child.height || 0)},\n    }`;
     }
 
     if (child.type === "text") {
-        return `    {\n      type: "text",\n      text: ${packCamel}Texts[${JSON.stringify(String(child.textName || child.name || ""))}],\n      x: ${Number(child.x || 0)},\n      y: ${Number(child.y || 0)},\n      width: ${Number(child.width || 0)},\n      height: ${Number(child.height || 0)},\n    },`;
+        return `{\n      type: "text",\n      text: ${packCamel}Texts[${JSON.stringify(String(child.textName || child.name || ""))}],\n      x: ${Number(child.x || 0)},\n      y: ${Number(child.y || 0)},\n      width: ${Number(child.width || 0)},\n      height: ${Number(child.height || 0)},\n    }`;
     }
 
-    return `    {\n      type: "asset",\n      asset: ${packCamel}AutoAssets.${child.assetKey},\n      x: ${Number(child.x || 0)},\n      y: ${Number(child.y || 0)},\n      width: ${Number(child.width || 0)},\n      height: ${Number(child.height || 0)},\n    },`;
+    return `{\n      asset: ${packCamel}AutoAssets.${child.assetKey},\n      x: ${Number(child.x || 0)},\n      y: ${Number(child.y || 0)},\n      width: ${Number(child.width || 0)},\n      height: ${Number(child.height || 0)},\n    }`;
 }
 
 /**
@@ -378,13 +390,15 @@ function buildTextObjectField(entry) {
 }
 
 /**
- * Generates one view/button data object literal.
+ * Генерирует view data без явной TS-аннотации, чтобы IDE видела поля children.
  */
 function buildViewDataLiteral(view, packCamel) {
-    const childBlocks = view.children.map((child) => buildViewChildBlock(child, packCamel));
+    const childBlocks = view.children.map((child) => {
+        return `    ${buildObjectKey(child.name)}: ${buildViewChildBlock(child, packCamel)},`;
+    });
     const buttonLine = view.button ? "\n  button: true," : "";
 
-    return `{\n  name: ${JSON.stringify(String(view.name || ""))},${buttonLine}\n  width: ${Number(view.width || 0)},\n  height: ${Number(view.height || 0)},\n  children: [\n${childBlocks.join("\n")}\n  ],\n}`;
+    return `{\n  name: ${JSON.stringify(String(view.name || ""))},${buttonLine}\n  width: ${Number(view.width || 0)},\n  height: ${Number(view.height || 0)},\n  children: {\n${childBlocks.join("\n")}\n  },\n}`;
 }
 
 /**
@@ -395,16 +409,16 @@ function buildSectionHeader(title) {
 }
 
 /**
- * Creates a unique local child variable name for one generated function.
+ * Создает уникальное локальное имя переменной внутри generated function.
  */
-function createUniqueLocalName(rawName, used) {
+function createUniqueLocalName(rawName, used, nameSuffix = "Child") {
     const base = toCamelCase(rawName) || "child";
-    let next = `${base}Child`;
-    let suffix = 2;
+    let next = `${base}${nameSuffix}`;
+    let index = 2;
 
     while (used.has(next)) {
-        next = `${base}Child${suffix}`;
-        suffix += 1;
+        next = `${base}${nameSuffix}${index}`;
+        index += 1;
     }
 
     used.add(next);
@@ -420,11 +434,11 @@ function capitalizeIdentifier(identifier) {
 }
 
 /**
- * Builds the exported constants block for all view/button data.
+ * Генерирует блок data-констант без общего типа у каждой константы.
  */
 function buildViewConstantsBlock(viewEntries, packCamel) {
     const blocks = viewEntries.map((view) => {
-        return `export const ${view.dataName}: IAutoViewData = ${buildViewDataLiteral(view, packCamel)};`;
+        return `export const ${view.dataName} = ${buildViewDataLiteral(view, packCamel)};`;
     });
 
     return `${buildSectionHeader("CONSTANTS")}\n\n${blocks.join("\n\n")}`;
@@ -502,23 +516,23 @@ function buildNestedHelperNames(root, nestedEntries) {
 }
 
 /**
- * Builds one expanded child creation block.
+ * Генерирует child без промежуточной data-переменной: layout-математика должна быть видна сразу.
  */
-function buildExpandedChildLines(child, index, parentDataName, helperNamesByFunctionName, usedLocalNames) {
+function buildExpandedChildLines(child, parentDataName, helperNamesByFunctionName, usedLocalNames) {
+    const childDataRef = buildObjectAccess(`${parentDataName}.children`, child.name);
     const childVarName = createUniqueLocalName(child.name, usedLocalNames);
-    const childDataRef = `${parentDataName}.children[${index}]`;
 
     if (child.type === "view") {
         const helperName = helperNamesByFunctionName.get(child.viewFunctionName);
 
-        return `  const ${childVarName} = ${helperName}(scene);\n  addNestedViewToView(\n    view,\n    ${childVarName},\n    ${parentDataName},\n    ${childDataRef} as IAutoViewRefChildData,\n  );`;
+        return `  const ${childVarName} = ${helperName}(scene);\n  setLeftTop(\n    ${childVarName},\n    ${childDataRef}.x - ${parentDataName}.width / 2,\n    ${childDataRef}.y - ${parentDataName}.height / 2,\n  );\n  view.add(${childVarName});`;
     }
 
     if (child.type === "text") {
-        return `  const ${childVarName} = createTextChild(\n    scene,\n    ${childDataRef} as IAutoTextRefChildData,\n  );\n  addChildToView(view, ${childVarName}, ${parentDataName});`;
+        return `  const ${childVarName} = createTextChild(scene, ${childDataRef});\n  setLeftTop(\n    ${childVarName},\n    ${childDataRef}.x - ${parentDataName}.width / 2,\n    ${childDataRef}.y - ${parentDataName}.height / 2,\n  );\n  view.add(${childVarName});`;
     }
 
-    return `  const ${childVarName} = createAssetChild(\n    scene,\n    ${childDataRef} as IAutoViewAssetChildData,\n  );\n  addChildToView(view, ${childVarName}, ${parentDataName});`;
+    return `  const ${childVarName} = createAssetChild(scene, ${childDataRef});\n  setLeftTop(\n    ${childVarName},\n    ${childDataRef}.x - ${parentDataName}.width / 2,\n    ${childDataRef}.y - ${parentDataName}.height / 2,\n  );\n  view.add(${childVarName});`;
 }
 
 /**
@@ -528,8 +542,8 @@ function buildExpandedViewFunction(props) {
     const { functionName, view, helperNamesByFunctionName } = props;
     const usedLocalNames = new Set();
     const childBlocks = Array.isArray(view.children)
-        ? view.children.map((child, index) =>
-            buildExpandedChildLines(child, index, view.dataName, helperNamesByFunctionName, usedLocalNames)
+        ? view.children.map((child) =>
+            buildExpandedChildLines(child, view.dataName, helperNamesByFunctionName, usedLocalNames)
         )
         : [];
     const childSection = childBlocks.length > 0 ? `\n\n${childBlocks.join("\n\n")}` : "";
@@ -579,16 +593,9 @@ function buildViewsTs(props) {
         : "";
     const utilsImports = [
         "createContainerFromViewData",
-        ...(hasAssetChildren(resolvedEntries) || hasTextChildren(resolvedEntries) ? ["addChildToView"] : []),
         ...(hasAssetChildren(resolvedEntries) ? ["createAssetChild"] : []),
         ...(hasTextChildren(resolvedEntries) ? ["createTextChild"] : []),
-        ...(hasViewChildren(resolvedEntries) ? ["addNestedViewToView"] : []),
-    ];
-    const typeImports = [
-        "IAutoViewData",
-        ...(hasAssetChildren(resolvedEntries) ? ["IAutoViewAssetChildData"] : []),
-        ...(hasTextChildren(resolvedEntries) ? ["IAutoTextRefChildData"] : []),
-        ...(hasViewChildren(resolvedEntries) ? ["IAutoViewRefChildData"] : []),
+        ...(hasAssetChildren(resolvedEntries) || hasTextChildren(resolvedEntries) || hasViewChildren(resolvedEntries) ? ["setLeftTop"] : []),
     ];
     const constantsBlock = buildViewConstantsBlock(resolvedEntries, packCamel);
     const viewSections = rootEntries.map((root) => buildViewSection(root, entriesByFunctionName));
@@ -597,9 +604,6 @@ function buildViewsTs(props) {
 ${assetImportBlock}${textImportBlock}import {
   ${utilsImports.join(",\n  ")}
 } from "./utils";
-import {
-  ${typeImports.join(",\n  ")}
-} from "./types";
 
 ${constantsBlock}
 
@@ -672,6 +676,7 @@ function buildPhaserSceneSources(props) {
 module.exports = {
     buildAtlasFilePath,
     buildObjectKey,
+    buildObjectAccess,
     createUniqueAssetKey,
     detectNinePadding,
     buildAssetEntries,
