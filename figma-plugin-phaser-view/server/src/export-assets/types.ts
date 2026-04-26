@@ -50,7 +50,7 @@ export interface IAutoViewAssetChildData {
 
 export interface IAutoViewLayoutData {
   readonly name?: string;
-  readonly button?: true;
+  readonly button?: boolean;
   readonly width: number;
   readonly height: number;
 }
