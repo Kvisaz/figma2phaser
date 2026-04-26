@@ -296,18 +296,39 @@ function sortViewEntriesForDeclarations(viewEntries) {
 }
 
 /**
- * Генерирует значение одного child внутри children object.
+ * Возвращает пробелы для читабельного generated TypeScript.
  */
-function buildViewChildBlock(child, packCamel) {
+function indent(level) {
+    return " ".repeat(level);
+}
+
+/**
+ * Генерирует значение одного child внутри children object.
+ * Для view child данные вкладываются сразу, без отдельной константы и без поля view.
+ */
+function buildViewChildBlock(child, packCamel, entriesByFunctionName = new Map(), visiting = new Set(), baseIndent = 4) {
+    const pad = indent(baseIndent);
     if (child.type === "view") {
-        return `{\n      type: "view",\n      view: ${child.viewDataName},\n      x: ${Number(child.x || 0)},\n      y: ${Number(child.y || 0)},\n      width: ${Number(child.width || 0)},\n      height: ${Number(child.height || 0)},\n    }`;
+        const childEntry = entriesByFunctionName.get(child.viewFunctionName);
+        const buttonLine = childEntry && childEntry.button ? `\n${pad}  button: true,` : "";
+        const childrenBlock = childEntry && !visiting.has(childEntry.functionName)
+            ? buildChildrenObjectLiteral(
+                childEntry.children,
+                packCamel,
+                entriesByFunctionName,
+                new Set([...visiting, childEntry.functionName]),
+                baseIndent + 2,
+            )
+            : "{\n" + indent(baseIndent + 2) + "}";
+
+        return `{\n${pad}  type: "view",\n${pad}  name: ${JSON.stringify(String((childEntry && childEntry.name) || child.name || ""))},${buttonLine}\n${pad}  x: ${Number(child.x || 0)},\n${pad}  y: ${Number(child.y || 0)},\n${pad}  width: ${Number(child.width || 0)},\n${pad}  height: ${Number(child.height || 0)},\n${pad}  children: ${childrenBlock},\n${pad}}`;
     }
 
     if (child.type === "text") {
-        return `{\n      type: "text",\n      text: ${packCamel}Texts[${JSON.stringify(String(child.textName || child.name || ""))}],\n      x: ${Number(child.x || 0)},\n      y: ${Number(child.y || 0)},\n      width: ${Number(child.width || 0)},\n      height: ${Number(child.height || 0)},\n    }`;
+        return `{\n${pad}  type: "text",\n${pad}  text: ${packCamel}Texts[${JSON.stringify(String(child.textName || child.name || ""))}],\n${pad}  x: ${Number(child.x || 0)},\n${pad}  y: ${Number(child.y || 0)},\n${pad}  width: ${Number(child.width || 0)},\n${pad}  height: ${Number(child.height || 0)},\n${pad}}`;
     }
 
-    return `{\n      asset: ${packCamel}AutoAssets.${child.assetKey},\n      x: ${Number(child.x || 0)},\n      y: ${Number(child.y || 0)},\n      width: ${Number(child.width || 0)},\n      height: ${Number(child.height || 0)},\n    }`;
+    return `{\n${pad}  asset: ${packCamel}AutoAssets.${child.assetKey},\n${pad}  x: ${Number(child.x || 0)},\n${pad}  y: ${Number(child.y || 0)},\n${pad}  width: ${Number(child.width || 0)},\n${pad}  height: ${Number(child.height || 0)},\n${pad}}`;
 }
 
 /**
@@ -327,6 +348,21 @@ function collapseChildrenForObjectLiteral(children) {
     });
 
     return Array.from(childrenByName.values());
+}
+
+/**
+ * Генерирует object literal для children с теми же правилами перетирания дублей.
+ */
+function buildChildrenObjectLiteral(children, packCamel, entriesByFunctionName, visiting, baseIndent) {
+    const childBlocks = collapseChildrenForObjectLiteral(children).map((child) => {
+        return `${indent(baseIndent + 2)}${buildObjectKey(child.name)}: ${buildViewChildBlock(child, packCamel, entriesByFunctionName, visiting, baseIndent + 2)},`;
+    });
+
+    if (childBlocks.length === 0) {
+        return "{\n" + indent(baseIndent) + "}";
+    }
+
+    return `{\n${childBlocks.join("\n")}\n${indent(baseIndent)}}`;
 }
 
 /**
@@ -411,13 +447,17 @@ function buildTextObjectField(entry) {
 /**
  * Генерирует view data без явной TS-аннотации, чтобы IDE видела поля children.
  */
-function buildViewDataLiteral(view, packCamel) {
-    const childBlocks = collapseChildrenForObjectLiteral(view.children).map((child) => {
-        return `    ${buildObjectKey(child.name)}: ${buildViewChildBlock(child, packCamel)},`;
-    });
+function buildViewDataLiteral(view, packCamel, entriesByFunctionName = new Map()) {
     const buttonLine = view.button ? "\n  button: true," : "";
+    const childrenBlock = buildChildrenObjectLiteral(
+        view.children,
+        packCamel,
+        entriesByFunctionName,
+        new Set([view.functionName]),
+        2,
+    );
 
-    return `{\n  name: ${JSON.stringify(String(view.name || ""))},${buttonLine}\n  width: ${Number(view.width || 0)},\n  height: ${Number(view.height || 0)},\n  children: {\n${childBlocks.join("\n")}\n  },\n}`;
+    return `{\n  name: ${JSON.stringify(String(view.name || ""))},${buttonLine}\n  width: ${Number(view.width || 0)},\n  height: ${Number(view.height || 0)},\n  children: ${childrenBlock},\n}`;
 }
 
 /**
@@ -455,9 +495,9 @@ function capitalizeIdentifier(identifier) {
 /**
  * Генерирует блок data-констант без общего типа у каждой константы.
  */
-function buildViewConstantsBlock(viewEntries, packCamel) {
+function buildViewConstantsBlock(viewEntries, packCamel, entriesByFunctionName = new Map()) {
     const blocks = viewEntries.map((view) => {
-        return `export const ${view.dataName} = ${buildViewDataLiteral(view, packCamel)};`;
+        return `export const ${view.dataName} = ${buildViewDataLiteral(view, packCamel, entriesByFunctionName)};`;
     });
 
     return `${buildSectionHeader("CONSTANTS")}\n\n${blocks.join("\n\n")}`;
@@ -511,58 +551,54 @@ function collectNestedViewEntries(root, entriesByFunctionName) {
 }
 
 /**
- * Builds parent-prefixed helper names for nested view/button functions.
+ * Генерирует child и всех его потомков внутри текущей root function.
  */
-function buildNestedHelperNames(root, nestedEntries) {
-    const used = new Set([root.functionName]);
-    const result = new Map();
-
-    nestedEntries.forEach((entry) => {
-        const base = `${root.functionName}${capitalizeIdentifier(entry.functionName) || "View"}`;
-        let next = base;
-        let suffix = 2;
-
-        while (used.has(next)) {
-            next = `${base}${suffix}`;
-            suffix += 1;
-        }
-
-        used.add(next);
-        result.set(entry.functionName, next);
-    });
-
-    return result;
-}
-
-/**
- * Генерирует child без промежуточной data-переменной: layout-математика должна быть видна сразу.
- */
-function buildExpandedChildLines(child, parentDataName, helperNamesByFunctionName, usedLocalNames) {
-    const childDataRef = buildObjectAccess(`${parentDataName}.children`, child.name);
+function buildExpandedChildLines(child, parentDataRef, parentViewVarName, entriesByFunctionName, usedLocalNames, visiting = new Set()) {
+    const childDataRef = buildObjectAccess(`${parentDataRef}.children`, child.name);
     const childVarName = createUniqueLocalName(child.name, usedLocalNames);
 
     if (child.type === "view") {
-        const helperName = helperNamesByFunctionName.get(child.viewFunctionName);
+        const childEntry = entriesByFunctionName.get(child.viewFunctionName);
+        const childLines = childEntry && !visiting.has(childEntry.functionName)
+            ? collapseChildrenForObjectLiteral(childEntry.children)
+                .map((nestedChild) => buildExpandedChildLines(
+                    nestedChild,
+                    childDataRef,
+                    childVarName,
+                    entriesByFunctionName,
+                    usedLocalNames,
+                    new Set([...visiting, childEntry.functionName]),
+                ))
+                .filter(Boolean)
+            : [];
+        const nestedSection = childLines.length > 0 ? `\n\n${childLines.join("\n\n")}` : "";
 
-        return `  const ${childVarName} = ${helperName}(scene);\n  setLeftTop(\n    ${childVarName},\n    ${childDataRef}.x - ${parentDataName}.width / 2,\n    ${childDataRef}.y - ${parentDataName}.height / 2,\n  );\n  view.add(${childVarName});`;
+        return `  const ${childVarName} = createContainerFromViewData(scene, ${childDataRef});${nestedSection}\n\n  setLeftTop(\n    ${childVarName},\n    ${childDataRef}.x - ${parentDataRef}.width / 2,\n    ${childDataRef}.y - ${parentDataRef}.height / 2,\n  );\n  ${parentViewVarName}.add(${childVarName});`;
     }
 
     if (child.type === "text") {
-        return `  const ${childVarName} = createTextChild(scene, ${childDataRef});\n  setLeftTop(\n    ${childVarName},\n    ${childDataRef}.x - ${parentDataName}.width / 2,\n    ${childDataRef}.y - ${parentDataName}.height / 2,\n  );\n  view.add(${childVarName});`;
+        return `  const ${childVarName} = createTextChild(scene, ${childDataRef});\n  setLeftTop(\n    ${childVarName},\n    ${childDataRef}.x - ${parentDataRef}.width / 2,\n    ${childDataRef}.y - ${parentDataRef}.height / 2,\n  );\n  ${parentViewVarName}.add(${childVarName});`;
     }
 
-    return `  const ${childVarName} = createAssetChild(scene, ${childDataRef});\n  setLeftTop(\n    ${childVarName},\n    ${childDataRef}.x - ${parentDataName}.width / 2,\n    ${childDataRef}.y - ${parentDataName}.height / 2,\n  );\n  view.add(${childVarName});`;
+    return `  const ${childVarName} = createAssetChild(scene, ${childDataRef});\n  setLeftTop(\n    ${childVarName},\n    ${childDataRef}.x - ${parentDataRef}.width / 2,\n    ${childDataRef}.y - ${parentDataRef}.height / 2,\n  );\n  ${parentViewVarName}.add(${childVarName});`;
 }
 
 /**
- * Builds one expanded view/button creation function.
+ * Генерирует единственную функцию для root view.
  */
 function buildExpandedViewFunction(props) {
-    const { functionName, view, helperNamesByFunctionName } = props;
+    const { functionName, view, entriesByFunctionName } = props;
     const usedLocalNames = new Set();
     const childBlocks = Array.isArray(view.children)
-        ? view.children.map((child) =>
-            buildExpandedChildLines(child, view.dataName, helperNamesByFunctionName, usedLocalNames)
+        ? collapseChildrenForObjectLiteral(view.children).map((child) =>
+            buildExpandedChildLines(
+                child,
+                view.dataName,
+                "view",
+                entriesByFunctionName,
+                usedLocalNames,
+                new Set([view.functionName]),
+            )
         )
         : [];
     const childSection = childBlocks.length > 0 ? `\n\n${childBlocks.join("\n\n")}` : "";
@@ -571,27 +607,17 @@ function buildExpandedViewFunction(props) {
 }
 
 /**
- * Builds one root view section with parent-prefixed nested helpers.
+ * Генерирует секцию одного root view: root data constant и root function.
  */
-function buildViewSection(root, entriesByFunctionName) {
-    const nestedEntries = collectNestedViewEntries(root, entriesByFunctionName);
-    const helperNamesByFunctionName = buildNestedHelperNames(root, nestedEntries);
-    const functions = [
-        buildExpandedViewFunction({
-            functionName: root.functionName,
-            view: root,
-            helperNamesByFunctionName,
-        }),
-        ...nestedEntries.map((entry) =>
-            buildExpandedViewFunction({
-                functionName: helperNamesByFunctionName.get(entry.functionName),
-                view: entry,
-                helperNamesByFunctionName,
-            })
-        ),
-    ];
+function buildViewSection(root, entriesByFunctionName, packCamel) {
+    const dataConstant = `export const ${root.dataName} = ${buildViewDataLiteral(root, packCamel, entriesByFunctionName)};`;
+    const viewFunction = buildExpandedViewFunction({
+        functionName: root.functionName,
+        view: root,
+        entriesByFunctionName,
+    });
 
-    return `${buildSectionHeader(`VIEW: ${root.functionName}`)}\n\n${functions.join("\n\n")}`;
+    return `${buildSectionHeader(`VIEW: ${root.functionName}`)}\n\n${dataConstant}\n\n${viewFunction}`;
 }
 
 /**
@@ -616,15 +642,12 @@ function buildViewsTs(props) {
         ...(hasTextChildren(resolvedEntries) ? ["createTextChild"] : []),
         ...(hasAssetChildren(resolvedEntries) || hasTextChildren(resolvedEntries) || hasViewChildren(resolvedEntries) ? ["setLeftTop"] : []),
     ];
-    const constantsBlock = buildViewConstantsBlock(resolvedEntries, packCamel);
-    const viewSections = rootEntries.map((root) => buildViewSection(root, entriesByFunctionName));
+    const viewSections = rootEntries.map((root) => buildViewSection(root, entriesByFunctionName, packCamel));
 
     return `// This file is auto-generated by figma2assets plugin. Do not edit manually.
 ${assetImportBlock}${textImportBlock}import {
   ${utilsImports.join(",\n  ")}
 } from "./utils";
-
-${constantsBlock}
 
 ${viewSections.join("\n\n")}
 `;
@@ -718,7 +741,6 @@ module.exports = {
     buildViewConstantsBlock,
     findRootViewEntries,
     collectNestedViewEntries,
-    buildNestedHelperNames,
     buildExpandedChildLines,
     buildExpandedViewFunction,
     buildViewSection,

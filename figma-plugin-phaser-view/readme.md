@@ -87,7 +87,11 @@ figma-plugin-phaser-view/
 - для `manifest.items` и `[packName]-assets.ts` используются актуальные `x/y/width/height` детей `assets*` frame;
 - координаты children в `*.view.ts` считаются относительно bounds соответствующего `view`.
 - `name` в generated data сохраняет точное имя Figma-объекта; runtime ставит его в `GameObject.name`.
-- safe `functionName` используется только для TypeScript identifiers и factory-функций обычных `view*`.
+- safe `functionName` используется только для TypeScript identifiers root factory-функций.
+- В generated `*.view.ts` создаются data-константы и factory-функции только для root `view*` / `button*` верхнего уровня.
+- Вложенные `view*` / `button*` инлайнятся в `children` родительского root data и собираются внутри root factory-функции.
+- `children` в generated data - object literal с ключами из имен Figma-детей, а не массив.
+- Generated data-константы не типизируются явно, чтобы IDE видела конкретные поля `children`.
 
 Если имя узла заканчивается на:
 
@@ -117,11 +121,11 @@ panel.bg.nine.20
 Любой видимый узел, имя которого начинается с `button`, считается отдельным renderable view container:
 
 - в `manifest.views` у него будет `"button": true`;
-- в generated `*.view.ts` у него будет exported `buttonNameData: IAutoViewData`;
+- если button лежит на верхнем уровне страницы, в generated `*.view.ts` у него будет root data-константа и root factory-функция;
+- если button вложен в другой `view*` / `button*`, отдельная data-константа и отдельная factory-функция для него не генерируются;
 - в button data будет `button: true`;
 - runtime setup выставит `container.setData("button", true)`;
-- если такой узел лежит внутри `view*` или другого `button*`, parent получит child `{ type: "view", view: buttonNameData, ... }`, а не прямой asset child;
-- для вложенного button/view генерируется exported helper-функция с parent-prefix, например `viewGoldShopButtonIconGold(scene)`.
+- если такой узел лежит внутри `view*` или другого `button*`, parent получит child `{ type: "view", name, button, x, y, width, height, children }`, а не прямой asset child.
 
 ### Button с детьми
 
@@ -138,9 +142,9 @@ viewMain
 
 Ожидаемый runtime смысл:
 
-- `buttonPlayData` имеет `button: true`;
-- `buttonPlayData.children` содержит asset children для `button.play.bg.nine.20` и `button.play.label`;
-- `viewMainData.children` содержит nested view child со ссылкой на `buttonPlayData`.
+- `viewMainData.children.buttonPlay` имеет `type: "view"` и `button: true`;
+- `viewMainData.children.buttonPlay.children` содержит asset children для `button.play.bg.nine.20` и `button.play.label`;
+- `viewMain(scene)` создает container для `buttonPlay` прямо внутри root function.
 
 ### Button без детей
 
@@ -156,46 +160,39 @@ viewMain
 Смысл generated data:
 
 ```ts
-export const buttonBackData: IAutoViewData = {
-  name: "buttonBack",
-  button: true,
-  width: 80,
-  height: 80,
-  children: [
-    {
-      type: "asset",
-      asset: assetsCoreAutoAssets.buttonBack,
-      x: 0,
-      y: 0,
-      width: 80,
-      height: 80,
-    },
-  ],
-};
-
-export const viewMainData: IAutoViewData = {
+export const viewMainData = {
   name: "viewMain",
   width: 768,
   height: 485,
-  children: [
-    {
+  children: {
+    buttonBack: {
       type: "view",
-      view: buttonBackData,
+      name: "buttonBack",
+      button: true,
       x: 350,
       y: 260,
       width: 80,
       height: 80,
+      children: {
+        buttonBack: {
+          asset: assetsCoreAutoAssets.buttonBack,
+          x: 0,
+          y: 0,
+          width: 80,
+          height: 80,
+        },
+      },
     },
-  ],
+  },
 };
 ```
 
 В этом случае имя `buttonBack` используется в двух ролях:
 
-- как имя button data: `buttonBackData`;
+- как ключ nested view child: `viewMainData.children.buttonBack`;
 - как имя atlas asset: `assetsCoreAutoAssets.buttonBack`.
 
-Это не конфликтует в TypeScript, потому что asset находится внутри объекта `assetsCoreAutoAssets`, а view data экспортируется отдельной константой.
+Это не конфликтует в TypeScript, потому что asset находится внутри объекта `assetsCoreAutoAssets`, а view child находится внутри `children`.
 
 Если в `assets*` frame уже есть asset с таким же именем `buttonBack`, export возьмет PNG оттуда. Если такого asset нет, plugin склонирует сам `buttonBack` в `assets*` frame и экспортирует его.
 
@@ -217,6 +214,79 @@ export const viewMainData: IAutoViewData = {
 - `scene.events.emit("onLocaleChange", { locale })` переключает текст по ключу локали из inline `localeMap`.
 
 Если нужен runtime override текста, `options.text` заменяет стартовое значение, а `options.style` дополняет style-снимок из Figma. `options.locale` задает стартовый ключ локали.
+
+---
+
+## Generated view TS
+
+Актуальный формат generated `*.view.ts`:
+
+- exported data-константы есть только для root `view*` / `button*` верхнего уровня страницы;
+- exported factory-функции есть только для этих root views;
+- nested `view*` / `button*` не получают отдельные константы и функции;
+- nested views создаются внутри root factory-функции через `createContainerFromViewData`;
+- layout не прячется в `addChildToView` / `addNestedViewToView`: generated code явно пишет `setLeftTop(...)` и `.add(...)`;
+- `children` генерируется как object literal, а не массив;
+- если имена детей в одном parent повторяются, при генерации object literal остается последнее поле с таким именем.
+
+Пример:
+
+```typescript
+export const viewShopData = {
+  name: "viewShop",
+  width: 1280,
+  height: 720,
+  children: {
+    buttonBack: {
+      type: "view",
+      name: "buttonBack",
+      button: true,
+      x: 10,
+      y: 20,
+      width: 100,
+      height: 60,
+      children: {
+        iconBackGold: {
+          asset: assetsCoreAutoAssets.iconBackGold,
+          x: 8,
+          y: 8,
+          width: 75,
+          height: 80,
+        },
+      },
+    },
+  },
+};
+
+export function viewShop(scene: Phaser.Scene): Phaser.GameObjects.Container {
+  const view = createContainerFromViewData(scene, viewShopData);
+
+  const buttonBackChild = createContainerFromViewData(scene, viewShopData.children.buttonBack);
+
+  const iconBackGoldChild = createAssetChild(scene, viewShopData.children.buttonBack.children.iconBackGold);
+  setLeftTop(
+    iconBackGoldChild,
+    viewShopData.children.buttonBack.children.iconBackGold.x - viewShopData.children.buttonBack.width / 2,
+    viewShopData.children.buttonBack.children.iconBackGold.y - viewShopData.children.buttonBack.height / 2,
+  );
+  buttonBackChild.add(iconBackGoldChild);
+
+  setLeftTop(
+    buttonBackChild,
+    viewShopData.children.buttonBack.x - viewShopData.width / 2,
+    viewShopData.children.buttonBack.y - viewShopData.height / 2,
+  );
+  view.add(buttonBackChild);
+
+  return view;
+}
+```
+
+Generated data-константы намеренно не имеют `: IAutoViewData` и не используют `as const`. Это сохраняет IDE-подсказки для конкретных полей вроде:
+
+```typescript
+viewShopData.children.buttonBack.children.iconBackGold
+```
 
 ---
 
@@ -519,7 +589,7 @@ http://localhost:3456/
 ```
 
 3. Выберите папки `atlasOutputDir` и `tsOutputDir`.
-4. В Figma выберите ровно один корневой UI-узел.
+4. В Figma откройте страницу, где лежат root `view*` / `button*` / `text*` и top-level `assets*` frame.
 5. Запустите plugin.
 6. Plugin выполнит диагностику: загрузит настройки, проверит server и текущую страницу, выведет лог.
 7. Проверьте `atlasBasePath` и `serverUrl`.

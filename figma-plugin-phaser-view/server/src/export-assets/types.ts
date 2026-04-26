@@ -64,9 +64,8 @@ export interface IAutoViewData extends IAutoViewLayoutData {
   };
 }
 
-export interface IAutoViewRefChildData {
+export interface IAutoViewRefChildData extends IAutoViewData {
   readonly type: string;
-  readonly view: IAutoViewData;
   readonly x: number;
   readonly y: number;
   readonly width: number;

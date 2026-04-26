@@ -123,7 +123,7 @@ function resolveLocaleText(
  * Проверяет, что child описывает вложенный view.
  */
 function isViewRefChild(child: IAutoViewChildData): child is IAutoViewRefChildData {
-  return child.type === "view" && "view" in child;
+  return child.type === "view" && "children" in child;
 }
 
 /**
@@ -269,7 +269,7 @@ export function renderViewChild(
   child: IAutoViewChildData,
 ): PosGameObject {
   if (isViewRefChild(child)) {
-    const nestedView = createView(scene, child.view);
+    const nestedView = createView(scene, child);
     setLeftTop(nestedView, child.x, child.y);
     return nestedView;
   }
