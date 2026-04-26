@@ -24,6 +24,15 @@ const ASSETS_ABOUT_TEXT_SIZE = 24;
 const ASSETS_ABOUT_TEXT_GAP = 16;
 const ASSETS_ABOUT_TEXT_CONTENT = "1. можно менять размеры NineSlice\n2. ассеты с одинаковыми именами заменяют друг друга";
 const TEXT_FONT_FAMILY_FALLBACKS = Object.freeze(["Roboto", "Verdana", "sans-serif"]);
+/**
+ * Явная map нужна из-за JUSTIFIED -> justify: это не простой toLowerCase.
+ */
+const FIGMA_TO_PHASER_TEXT_ALIGN = new Map([
+  ["LEFT", "left"],
+  ["CENTER", "center"],
+  ["RIGHT", "right"],
+  ["JUSTIFIED", "justify"],
+]);
 
 /**
  * Настройки экспорта PNG для каждого верхнего ребенка.
@@ -1449,7 +1458,19 @@ function buildTextStyleSnapshotFromNode(node) {
     style.stroke = strokeColor;
   }
 
+  const textAlignHorizontal = node && node.textAlignHorizontal;
+  if (textAlignHorizontal && textAlignHorizontal !== figma.mixed) {
+    style.align = mapFigmaTextAlignHorizontalToPhaser(textAlignHorizontal);
+  }
+
   return style;
+}
+
+/**
+ * Переводит Figma horizontal text align в Phaser TextStyle.align.
+ */
+function mapFigmaTextAlignHorizontalToPhaser(value) {
+  return FIGMA_TO_PHASER_TEXT_ALIGN.get(String(value || "")) || "left";
 }
 
 /**

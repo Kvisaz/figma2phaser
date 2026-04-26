@@ -384,6 +384,10 @@ function buildTextStyleLiteral(style) {
         lines.push(`    color: ${JSON.stringify(String(snapshot.color))},`);
     }
 
+    if (snapshot.align) {
+        lines.push(`    align: ${JSON.stringify(String(snapshot.align))},`);
+    }
+
     if (snapshot.stroke) {
         lines.push(`    stroke: ${JSON.stringify(String(snapshot.stroke))},`);
     }
