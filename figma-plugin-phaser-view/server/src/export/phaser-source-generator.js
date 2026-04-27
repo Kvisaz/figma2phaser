@@ -500,8 +500,8 @@ function buildSectionHeader(title) {
 /**
  * Создает уникальное локальное имя переменной внутри generated function.
  */
-function createUniqueLocalName(rawName, used, nameSuffix = "Child") {
-    const base = toCamelCase(rawName) || "child";
+function createUniqueLocalName(rawName, used, nameSuffix = "") {
+    const base = toCamelCasePreservingCamel(rawName) || "child";
     let next = `${base}${nameSuffix}`;
     let index = 2;
 
@@ -512,6 +512,16 @@ function createUniqueLocalName(rawName, used, nameSuffix = "Child") {
 
     used.add(next);
     return next;
+}
+
+/**
+ * Делает camelCase для локальных переменных без разрушения уже нормального camelCase из Figma.
+ */
+function toCamelCasePreservingCamel(input) {
+    const pascal = toPascalCasePreservingCamel(input);
+    const result = pascal.charAt(0).toLowerCase() + pascal.slice(1);
+
+    return /^[0-9]/.test(result) ? `n${result}` : result;
 }
 
 /**
@@ -592,17 +602,20 @@ function findRootReferenceEntry(child, rootEntriesByName, currentRoot) {
 }
 
 /**
- * Collects nested view/button entries for one root section.
+ * Собирает nested view/button для root section.
+ * Имена builder-функций не уникализируются: если в Figma есть дубли,
+ * generated TypeScript должен показать конфликт, чтобы оператор исправил имена в Figma.
  */
-function collectNestedViewEntries(root, entriesByFunctionName) {
+function collectNestedBuilderEntries(root, entriesByFunctionName, rootEntriesByName) {
     const result = [];
     const seen = new Set();
 
-    function visit(entry) {
+    function visit(entry, currentRoot) {
         if (!entry || !Array.isArray(entry.children)) return;
 
-        entry.children.forEach((child) => {
+        collapseChildrenForObjectLiteral(entry.children).forEach((child) => {
             if (child.type !== "view") return;
+            if (findRootReferenceEntry(child, rootEntriesByName, currentRoot)) return;
 
             const childEntry = entriesByFunctionName.get(child.viewFunctionName);
             if (!childEntry) return;
@@ -611,45 +624,69 @@ function collectNestedViewEntries(root, entriesByFunctionName) {
                 seen.add(childEntry.functionName);
                 result.push(childEntry);
             }
-            visit(childEntry);
+            visit(childEntry, currentRoot);
         });
     }
 
-    visit(root);
+    visit(root, root);
     return result;
 }
 
 /**
- * Генерирует child и всех его потомков внутри текущей root function.
+ * Строит имя private builder напрямую из имени Figma.
+ * Суффиксы для дублей не добавляются: конфликт должен быть виден в generated TS.
  */
-function buildExpandedChildLines(child, parentDataRef, parentViewVarName, entriesByFunctionName, rootEntriesByName, currentRoot, usedLocalNames, visiting = new Set()) {
+function buildPrivateBuilderName(viewEntry) {
+    return `build${toPascalCasePreservingCamel((viewEntry && viewEntry.name) || "View")}`;
+}
+
+/**
+ * Строит имя exported root factory.
+ * Префикс create отделяет функцию создания от локальной переменной с тем же именем Figma child.
+ */
+function buildRootFactoryName(viewEntry) {
+    return `create${toPascalCasePreservingCamel((viewEntry && viewEntry.name) || (viewEntry && viewEntry.functionName) || "View")}`;
+}
+
+/**
+ * Делает PascalCase для builder-функций без разрушения уже нормального camelCase из Figma.
+ */
+function toPascalCasePreservingCamel(input) {
+    const tokens = String(input || "")
+        .normalize("NFKD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .split(/[^a-zA-Z0-9]+/)
+        .filter(Boolean);
+
+    const result = tokens.map((token) => {
+        const hasInnerUpperCase = /[A-Z]/.test(token.slice(1));
+        const normalized = hasInnerUpperCase ? token : token.toLowerCase();
+        return normalized.charAt(0).toUpperCase() + normalized.slice(1);
+    }).join("");
+    const safe = result || "View";
+
+    return /^[0-9]/.test(safe) ? `N${safe}` : safe;
+}
+
+/**
+ * Генерирует direct child текущего builder.
+ * Вложенный view не разворачивается здесь: для него вызывается отдельный private builder.
+ */
+function buildDirectChildLines(child, parentDataRef, parentViewVarName, entriesByFunctionName, rootEntriesByName, currentRoot, usedLocalNames) {
     const childDataRef = buildObjectAccess(`${parentDataRef}.children`, child.name);
     const childVarName = createUniqueLocalName(child.name, usedLocalNames);
 
     if (child.type === "view") {
         const rootReferenceEntry = findRootReferenceEntry(child, rootEntriesByName, currentRoot);
         if (rootReferenceEntry) {
-            return `  const ${childVarName} = ${rootReferenceEntry.functionName}(scene);\n  setLeftTop(\n    ${childVarName},\n    ${childDataRef}.x - ${parentDataRef}.width / 2,\n    ${childDataRef}.y - ${parentDataRef}.height / 2,\n  );\n  ${parentViewVarName}.add(${childVarName});`;
+            const rootFactoryName = buildRootFactoryName(rootReferenceEntry);
+            return `  const ${childVarName} = ${rootFactoryName}(scene);\n  setLeftTop(\n    ${childVarName},\n    ${childDataRef}.x - ${parentDataRef}.width / 2,\n    ${childDataRef}.y - ${parentDataRef}.height / 2,\n  );\n  ${parentViewVarName}.add(${childVarName});`;
         }
 
         const childEntry = entriesByFunctionName.get(child.viewFunctionName);
-        const childLines = childEntry && !visiting.has(childEntry.functionName)
-            ? collapseChildrenForObjectLiteral(childEntry.children)
-                .map((nestedChild) => buildExpandedChildLines(
-                    nestedChild,
-                    childDataRef,
-                    childVarName,
-                    entriesByFunctionName,
-                    rootEntriesByName,
-                    currentRoot,
-                    usedLocalNames,
-                    new Set([...visiting, childEntry.functionName]),
-                ))
-                .filter(Boolean)
-            : [];
-        const nestedSection = childLines.length > 0 ? `\n\n${childLines.join("\n\n")}` : "";
+        const builderName = buildPrivateBuilderName(childEntry);
 
-        return `  const ${childVarName} = createContainerFromViewData(scene, ${childDataRef});${nestedSection}\n\n  setLeftTop(\n    ${childVarName},\n    ${childDataRef}.x - ${parentDataRef}.width / 2,\n    ${childDataRef}.y - ${parentDataRef}.height / 2,\n  );\n  ${parentViewVarName}.add(${childVarName});`;
+        return `  const ${childVarName} = ${builderName}(scene, ${childDataRef});\n  setLeftTop(\n    ${childVarName},\n    ${childDataRef}.x - ${parentDataRef}.width / 2,\n    ${childDataRef}.y - ${parentDataRef}.height / 2,\n  );\n  ${parentViewVarName}.add(${childVarName});`;
     }
 
     if (child.type === "text") {
@@ -660,43 +697,72 @@ function buildExpandedChildLines(child, parentDataRef, parentViewVarName, entrie
 }
 
 /**
- * Генерирует единственную функцию для root view.
+ * Генерирует функцию, которая собирает только direct children переданного data.
+ * Это базовое правило private builders: parent не разворачивает внутренности nested view сам.
  */
-function buildExpandedViewFunction(props) {
-    const { functionName, view, entriesByFunctionName, rootEntriesByName } = props;
+function buildViewBuilderFunction(props) {
+    const {
+        functionName,
+        view,
+        dataRef,
+        isExported = false,
+        entriesByFunctionName,
+        rootEntriesByName,
+        currentRoot,
+    } = props;
     const usedLocalNames = new Set();
     const childBlocks = Array.isArray(view.children)
         ? collapseChildrenForObjectLiteral(view.children).map((child) =>
-            buildExpandedChildLines(
+            buildDirectChildLines(
                 child,
-                view.dataName,
+                dataRef,
                 "view",
                 entriesByFunctionName,
                 rootEntriesByName,
-                view,
+                currentRoot,
                 usedLocalNames,
-                new Set([view.functionName]),
             )
         )
         : [];
     const childSection = childBlocks.length > 0 ? `\n\n${childBlocks.join("\n\n")}` : "";
+    const exportPrefix = isExported ? "export " : "";
+    const dataParam = isExported ? "" : ", data: any";
+    const dataSource = isExported ? dataRef : "data";
+    const comment = isExported
+        ? ""
+        : `/**\n * Собирает вложенный view только из его direct children.\n * Родительский builder вызывает эту функцию и не разворачивает внутренности сам.\n */\n`;
 
-    return `export function ${functionName}(scene: Phaser.Scene): Phaser.GameObjects.Container {\n  const view = createContainerFromViewData(scene, ${view.dataName});${childSection}\n\n  return view;\n}`;
+    return `${comment}${exportPrefix}function ${functionName}(scene: Phaser.Scene${dataParam}): Phaser.GameObjects.Container {\n  const view = createContainerFromViewData(scene, ${dataSource});${childSection}\n\n  return view;\n}`;
 }
 
 /**
- * Генерирует секцию одного root view: root data constant и root function.
+ * Генерирует root function и private builders для nested view/button.
  */
 function buildViewSection(root, entriesByFunctionName, packCamel, rootEntriesByName) {
     const dataConstant = `export const ${root.dataName} = ${buildViewDataLiteral(root, packCamel, entriesByFunctionName, rootEntriesByName, root)};`;
-    const viewFunction = buildExpandedViewFunction({
-        functionName: root.functionName,
+    const viewFunction = buildViewBuilderFunction({
+        functionName: buildRootFactoryName(root),
         view: root,
+        dataRef: root.dataName,
+        isExported: true,
         entriesByFunctionName,
         rootEntriesByName,
+        currentRoot: root,
     });
+    const privateBuilders = collectNestedBuilderEntries(root, entriesByFunctionName, rootEntriesByName).map((entry) =>
+        buildViewBuilderFunction({
+            functionName: buildPrivateBuilderName(entry),
+            view: entry,
+            dataRef: "data",
+            isExported: false,
+            entriesByFunctionName,
+            rootEntriesByName,
+            currentRoot: root,
+        })
+    );
+    const privateBuilderSection = privateBuilders.length > 0 ? `\n\n${privateBuilders.join("\n\n")}` : "";
 
-    return `${buildSectionHeader(`VIEW: ${root.functionName}`)}\n\n${dataConstant}\n\n${viewFunction}`;
+    return `${buildSectionHeader(`VIEW: ${root.functionName}`)}\n\n${dataConstant}\n\n${viewFunction}${privateBuilderSection}`;
 }
 
 /**
@@ -823,9 +889,11 @@ module.exports = {
     findPageRootViewEntries,
     buildRootEntriesByName,
     findRootReferenceEntry,
-    collectNestedViewEntries,
-    buildExpandedChildLines,
-    buildExpandedViewFunction,
+    collectNestedBuilderEntries,
+    buildPrivateBuilderName,
+    buildRootFactoryName,
+    buildDirectChildLines,
+    buildViewBuilderFunction,
     buildViewSection,
     buildViewsTs,
     buildTextTs,

@@ -8,6 +8,8 @@
 - Plugin смотрит детей первого уровня страницы и direct children фреймов, имя которых не начинается с `assets`.
 - Внутрь групп на этапе поиска root plugin не проваливается: служебные button-like ассеты внутри групп не становятся отдельными root exports.
 - После того как root `view/button` найден, его внутреннее дерево разбирается нормально: вложенные `view`, `button`, `text` и asset children сохраняют иерархию.
+- Root factory-функции собирают только direct children; вложенные `view/button` собираются private builder-функциями `buildXxx(...)`.
+- Exported root factory-функции получают prefix `create`, например `createViewGoldShop(...)` и `createButtonBack(...)`.
 - `assets*` frame нужен для atlas assets. Он не является источником root view.
 - Generated data-константы не типизируются явно, чтобы IDE видела конкретные поля `children`.
 - `children` генерируется как object literal с ключами из имен Figma-детей, а не как массив.
@@ -89,7 +91,8 @@ figma-plugin-phaser-view/
 
 Из текущей страницы экспортируются:
 
-- все `view*`, `button*` и `text*` узлы, найденные на странице;
+- root `view*` / `button*` из детей первого уровня страницы;
+- root `view*` / `button*` из direct children фреймов, имя которых не начинается с `assets`;
 - только видимые дети первого уровня у каждого `view*` / `button*`;
 - если child тоже начинается с `view`, `button` или `text`, он обрабатывается как вложенный renderable child;
 - каждый уникальный asset как отдельный PNG;
@@ -98,7 +101,9 @@ figma-plugin-phaser-view/
 - `name` в generated data сохраняет точное имя Figma-объекта; runtime ставит его в `GameObject.name`.
 - safe `functionName` используется только для TypeScript identifiers root factory-функций.
 - В generated `*.view.ts` создаются data-константы и factory-функции только для root `view*` / `button*` верхнего уровня.
-- Вложенные `view*` / `button*` инлайнятся в `children` родительского root data и собираются внутри root factory-функции.
+- Root factory-функции называются `createXxx`, чтобы не конфликтовать с локальными переменными children.
+- Вложенные `view*` / `button*` инлайнятся в `children` родительского root data и собираются private builder-функциями.
+- Private builder names выводятся напрямую из Figma names; если имена задублированы, TypeScript покажет конфликт, а Figma-структуру нужно поправить вручную.
 - `children` в generated data - object literal с ключами из имен Figma-детей, а не массив.
 - Generated data-константы не типизируются явно, чтобы IDE видела конкретные поля `children`.
 
@@ -153,7 +158,7 @@ viewMain
 
 - `viewMainData.children.buttonPlay` имеет `type: "view"` и `button: true`;
 - `viewMainData.children.buttonPlay.children` содержит asset children для `button.play.bg.nine.20` и `button.play.label`;
-- `viewMain(scene)` создает container для `buttonPlay` прямо внутри root function.
+- `createViewMain(scene)` вызывает private builder для `buttonPlay`, а builder собирает direct children кнопки.
 
 ### Button без детей
 
@@ -231,12 +236,15 @@ export const viewMainData = {
 Актуальный формат generated `*.view.ts`:
 
 - exported data-константы есть только для root `view*` / `button*` верхнего уровня страницы;
-- exported factory-функции есть только для этих root views;
-- nested `view*` / `button*` не получают отдельные константы и функции;
-- nested views создаются внутри root factory-функции через `createContainerFromViewData`;
+- exported factory-функции есть только для этих root views и называются `createXxx`;
+- nested `view*` / `button*` не получают отдельные data-константы;
+- nested `view*` / `button*` получают private builder-функции `buildXxx(...)` внутри того же generated файла;
+- root factory-функция собирает только direct children root view;
+- каждый private builder собирает только direct children своего `data`;
 - layout не прячется в `addChildToView` / `addNestedViewToView`: generated code явно пишет `setLeftTop(...)` и `.add(...)`;
 - `children` генерируется как object literal, а не массив;
 - если имена детей в одном parent повторяются, при генерации object literal остается последнее поле с таким именем.
+- имена private builders не уникализируются автоматически; duplicate function name считается сигналом исправить Figma names.
 
 Пример:
 
@@ -267,25 +275,34 @@ export const viewShopData = {
   },
 };
 
-export function viewShop(scene: Phaser.Scene): Phaser.GameObjects.Container {
+export function createViewShop(scene: Phaser.Scene): Phaser.GameObjects.Container {
   const view = createContainerFromViewData(scene, viewShopData);
 
-  const buttonBackChild = createContainerFromViewData(scene, viewShopData.children.buttonBack);
-
-  const iconBackGoldChild = createAssetChild(scene, viewShopData.children.buttonBack.children.iconBackGold);
+  const buttonBack = buildButtonBack(scene, viewShopData.children.buttonBack);
   setLeftTop(
-    iconBackGoldChild,
-    viewShopData.children.buttonBack.children.iconBackGold.x - viewShopData.children.buttonBack.width / 2,
-    viewShopData.children.buttonBack.children.iconBackGold.y - viewShopData.children.buttonBack.height / 2,
-  );
-  buttonBackChild.add(iconBackGoldChild);
-
-  setLeftTop(
-    buttonBackChild,
+    buttonBack,
     viewShopData.children.buttonBack.x - viewShopData.width / 2,
     viewShopData.children.buttonBack.y - viewShopData.height / 2,
   );
-  view.add(buttonBackChild);
+  view.add(buttonBack);
+
+  return view;
+}
+
+/**
+ * Собирает вложенный view только из его direct children.
+ * Родительский builder вызывает эту функцию и не разворачивает внутренности сам.
+ */
+function buildButtonBack(scene: Phaser.Scene, data: any): Phaser.GameObjects.Container {
+  const view = createContainerFromViewData(scene, data);
+
+  const iconBackGold = createAssetChild(scene, data.children.iconBackGold);
+  setLeftTop(
+    iconBackGold,
+    data.children.iconBackGold.x - data.width / 2,
+    data.children.iconBackGold.y - data.height / 2,
+  );
+  view.add(iconBackGold);
 
   return view;
 }
