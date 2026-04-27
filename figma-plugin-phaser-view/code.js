@@ -405,40 +405,70 @@ function buildViewGraphFromCurrentPage() {
     allViews: [],
     byNodeId: new Map(),
   };
-  const usedFunctionNames = new Set();
 
   figma.currentPage.children.forEach((node) => {
-    collectRootViewDescriptorFromSubtree(node, graph, usedFunctionNames);
+    collectPageRootViewDescriptor(node, graph);
   });
+
+  assignRootFunctionNames(graph.roots);
 
   return graph;
 }
 
 /**
- * Ищет корневые renderable узлы вне assets* frame.
+ * Ищет root view/button только среди детей страницы и direct children обычных фреймов.
+ * Глубже на этапе поиска root не спускаемся, чтобы служебные view/button внутри групп не становились экспортами.
  */
-function collectRootViewDescriptorFromSubtree(node, graph, usedFunctionNames) {
-  if (!node || node.visible === false || isAssetsFrameNode(node)) return;
+function collectPageRootViewDescriptor(node, graph) {
+  if (!node || node.visible === false) return;
 
-  if (isRenderableNode(node)) {
-    const descriptor = appendViewDescriptorToGraph(node, null, graph, usedFunctionNames);
-    if (descriptor) {
-      graph.roots.push(descriptor);
-    }
+  if (isParsingTopChild(node)) {
+    addRootViewDescriptor(node, graph);
     return;
   }
 
-  if (!hasChildren(node)) return;
+  if (!isParsingChildrenFrame(node)) return;
 
   node.children.forEach((child) => {
-    collectRootViewDescriptorFromSubtree(child, graph, usedFunctionNames);
+    if (isParsingTopChild(child)) {
+      addRootViewDescriptor(child, graph);
+    }
   });
+}
+
+/**
+ * На вход root-парсинга допускаются только имена с префиксом view или button.
+ * Остальные top-level узлы и дети фреймов не являются экспортируемыми view.
+ */
+function isParsingTopChild(node) {
+  if (!node || node.visible === false) return false;
+
+  const kind = getRenderableKind(node);
+  return kind === "view" || kind === "button";
+}
+
+/**
+ * Фреймы с префиксом assets являются источником атласа, но не источником root view.
+ * Для остальных фреймов смотрим только direct children.
+ */
+function isParsingChildrenFrame(node) {
+  return Boolean(node && node.visible !== false && node.type === "FRAME" && !isAssetsFrameNode(node));
+}
+
+/**
+ * Добавляет найденный root и запускает полный nested-разбор уже внутри него.
+ */
+function addRootViewDescriptor(node, graph) {
+  const descriptor = appendViewDescriptorToGraph(node, null, graph);
+  if (descriptor) {
+    graph.roots.push(descriptor);
+  }
 }
 
 /**
  * Добавляет renderable node в graph и рекурсивно связывает direct child renderables.
  */
-function appendViewDescriptorToGraph(node, parentDescriptor, graph, usedFunctionNames) {
+function appendViewDescriptorToGraph(node, parentDescriptor, graph) {
   if (!node || node.visible === false) return null;
 
   const kind = getRenderableKind(node);
@@ -455,7 +485,8 @@ function appendViewDescriptorToGraph(node, parentDescriptor, graph, usedFunction
     nodeId: node.id,
     name: node.name || node.id,
     kind,
-    functionName: createUniqueFunctionName(functionNameBase, usedFunctionNames),
+    baseFunctionName: functionNameBase,
+    functionName: functionNameBase,
     dataName: "",
     parentNodeId: parentDescriptor ? parentDescriptor.nodeId : null,
     childRenderableNodeIds: [],
@@ -471,13 +502,26 @@ function appendViewDescriptorToGraph(node, parentDescriptor, graph, usedFunction
   getVisibleDirectChildren(node).forEach((child) => {
     if (!isRenderableNode(child)) return;
 
-    const childDescriptor = appendViewDescriptorToGraph(child, descriptor, graph, usedFunctionNames);
+    const childDescriptor = appendViewDescriptorToGraph(child, descriptor, graph);
     if (childDescriptor) {
       descriptor.childRenderableNodeIds.push(childDescriptor.nodeId);
     }
   });
 
   return descriptor;
+}
+
+/**
+ * Уникализирует имена только для root factory-функций.
+ * Nested views больше не генерируют отдельные функции, поэтому они не должны занимать root namespace.
+ */
+function assignRootFunctionNames(rootDescriptors) {
+  const usedFunctionNames = new Set();
+
+  rootDescriptors.forEach((descriptor) => {
+    descriptor.functionName = createUniqueFunctionName(descriptor.baseFunctionName, usedFunctionNames);
+    descriptor.dataName = `${descriptor.functionName}Data`;
+  });
 }
 
 /**
@@ -1055,6 +1099,7 @@ function buildViewExportRootData(viewNode) {
 function buildManifestViews(props) {
   const { viewGraph, exportedAssetsByName, skipped } = props;
   const views = [];
+  const rootNodeIds = new Set(viewGraph.roots.map((root) => root.nodeId));
 
   viewGraph.allViews.forEach((viewDescriptor) => {
     const viewNode = viewDescriptor.node;
@@ -1079,6 +1124,12 @@ function buildManifestViews(props) {
     views.push({
       nodeId: viewDescriptor.nodeId,
       name: viewDescriptor.name,
+      /**
+       * isRoot фиксирует root верхнего уровня страницы.
+       * Нельзя вычислять root на server только по входящим ссылкам:
+       * reusable root view может использоваться как child внутри другого root.
+       */
+      isRoot: rootNodeIds.has(viewDescriptor.nodeId),
       functionName: viewDescriptor.functionName,
       dataName: viewDescriptor.dataName,
       kind: viewDescriptor.kind,

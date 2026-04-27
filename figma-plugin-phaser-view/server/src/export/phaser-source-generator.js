@@ -306,9 +306,23 @@ function indent(level) {
  * Генерирует значение одного child внутри children object.
  * Для view child данные вкладываются сразу, без отдельной константы и без поля view.
  */
-function buildViewChildBlock(child, packCamel, entriesByFunctionName = new Map(), visiting = new Set(), baseIndent = 4) {
+function buildViewChildBlock(props) {
+    const {
+        child,
+        packCamel,
+        entriesByFunctionName = new Map(),
+        rootEntriesByName = new Map(),
+        currentRoot = null,
+        visiting = new Set(),
+        baseIndent = 4,
+    } = props;
     const pad = indent(baseIndent);
     if (child.type === "view") {
+        const rootReferenceEntry = findRootReferenceEntry(child, rootEntriesByName, currentRoot);
+        if (rootReferenceEntry) {
+            return `{\n${pad}  type: "view",\n${pad}  rootRef: ${JSON.stringify(String(rootReferenceEntry.name || child.name || ""))},\n${pad}  x: ${Number(child.x || 0)},\n${pad}  y: ${Number(child.y || 0)},\n${pad}  width: ${Number(child.width || 0)},\n${pad}  height: ${Number(child.height || 0)},\n${pad}}`;
+        }
+
         const childEntry = entriesByFunctionName.get(child.viewFunctionName);
         const buttonLine = childEntry && childEntry.button ? `\n${pad}  button: true,` : "";
         const childrenBlock = childEntry && !visiting.has(childEntry.functionName)
@@ -316,6 +330,8 @@ function buildViewChildBlock(child, packCamel, entriesByFunctionName = new Map()
                 childEntry.children,
                 packCamel,
                 entriesByFunctionName,
+                rootEntriesByName,
+                currentRoot,
                 new Set([...visiting, childEntry.functionName]),
                 baseIndent + 2,
             )
@@ -353,9 +369,17 @@ function collapseChildrenForObjectLiteral(children) {
 /**
  * Генерирует object literal для children с теми же правилами перетирания дублей.
  */
-function buildChildrenObjectLiteral(children, packCamel, entriesByFunctionName, visiting, baseIndent) {
+function buildChildrenObjectLiteral(children, packCamel, entriesByFunctionName, rootEntriesByName, currentRoot, visiting, baseIndent) {
     const childBlocks = collapseChildrenForObjectLiteral(children).map((child) => {
-        return `${indent(baseIndent + 2)}${buildObjectKey(child.name)}: ${buildViewChildBlock(child, packCamel, entriesByFunctionName, visiting, baseIndent + 2)},`;
+        return `${indent(baseIndent + 2)}${buildObjectKey(child.name)}: ${buildViewChildBlock({
+            child,
+            packCamel,
+            entriesByFunctionName,
+            rootEntriesByName,
+            currentRoot,
+            visiting,
+            baseIndent: baseIndent + 2,
+        })},`;
     });
 
     if (childBlocks.length === 0) {
@@ -451,12 +475,14 @@ function buildTextObjectField(entry) {
 /**
  * Генерирует view data без явной TS-аннотации, чтобы IDE видела поля children.
  */
-function buildViewDataLiteral(view, packCamel, entriesByFunctionName = new Map()) {
+function buildViewDataLiteral(view, packCamel, entriesByFunctionName = new Map(), rootEntriesByName = new Map(), currentRoot = view) {
     const buttonLine = view.button ? "\n  button: true," : "";
     const childrenBlock = buildChildrenObjectLiteral(
         view.children,
         packCamel,
         entriesByFunctionName,
+        rootEntriesByName,
+        currentRoot,
         new Set([view.functionName]),
         2,
     );
@@ -499,9 +525,9 @@ function capitalizeIdentifier(identifier) {
 /**
  * Генерирует блок data-констант без общего типа у каждой константы.
  */
-function buildViewConstantsBlock(viewEntries, packCamel, entriesByFunctionName = new Map()) {
+function buildViewConstantsBlock(viewEntries, packCamel, entriesByFunctionName = new Map(), rootEntriesByName = new Map()) {
     const blocks = viewEntries.map((view) => {
-        return `export const ${view.dataName} = ${buildViewDataLiteral(view, packCamel, entriesByFunctionName)};`;
+        return `export const ${view.dataName} = ${buildViewDataLiteral(view, packCamel, entriesByFunctionName, rootEntriesByName, view)};`;
     });
 
     return `${buildSectionHeader("CONSTANTS")}\n\n${blocks.join("\n\n")}`;
@@ -524,6 +550,45 @@ function findRootViewEntries(viewEntries) {
     });
 
     return viewEntries.filter((view) => !referencedFunctionNames.has(view.functionName));
+}
+
+/**
+ * Берет root views из manifest.isRoot, а для старых manifest оставляет прежний fallback.
+ */
+function findPageRootViewEntries(viewEntries) {
+    const explicitRoots = viewEntries.filter((view) => view.isRoot);
+    if (explicitRoots.length > 0) return explicitRoots;
+    return findRootViewEntries(viewEntries);
+}
+
+/**
+ * Индекс root views по имени Figma для component-like ссылок из nested children.
+ */
+function buildRootEntriesByName(rootEntries) {
+    const result = new Map();
+
+    rootEntries.forEach((entry) => {
+        result.set(String(entry.name || ""), entry);
+    });
+
+    return result;
+}
+
+/**
+ * Root reference определяется по имени Figma child.
+ * Это осознанный component-like контракт: имя вложенного view выбирает root factory.
+ */
+function findRootReferenceEntry(child, rootEntriesByName, currentRoot) {
+    if (!child || child.type !== "view") return null;
+
+    const rootEntry = rootEntriesByName.get(String(child.name || ""));
+    if (!rootEntry) return null;
+
+    if (currentRoot && rootEntry.functionName === currentRoot.functionName) {
+        return null;
+    }
+
+    return rootEntry;
 }
 
 /**
@@ -557,11 +622,16 @@ function collectNestedViewEntries(root, entriesByFunctionName) {
 /**
  * Генерирует child и всех его потомков внутри текущей root function.
  */
-function buildExpandedChildLines(child, parentDataRef, parentViewVarName, entriesByFunctionName, usedLocalNames, visiting = new Set()) {
+function buildExpandedChildLines(child, parentDataRef, parentViewVarName, entriesByFunctionName, rootEntriesByName, currentRoot, usedLocalNames, visiting = new Set()) {
     const childDataRef = buildObjectAccess(`${parentDataRef}.children`, child.name);
     const childVarName = createUniqueLocalName(child.name, usedLocalNames);
 
     if (child.type === "view") {
+        const rootReferenceEntry = findRootReferenceEntry(child, rootEntriesByName, currentRoot);
+        if (rootReferenceEntry) {
+            return `  const ${childVarName} = ${rootReferenceEntry.functionName}(scene);\n  setLeftTop(\n    ${childVarName},\n    ${childDataRef}.x - ${parentDataRef}.width / 2,\n    ${childDataRef}.y - ${parentDataRef}.height / 2,\n  );\n  ${parentViewVarName}.add(${childVarName});`;
+        }
+
         const childEntry = entriesByFunctionName.get(child.viewFunctionName);
         const childLines = childEntry && !visiting.has(childEntry.functionName)
             ? collapseChildrenForObjectLiteral(childEntry.children)
@@ -570,6 +640,8 @@ function buildExpandedChildLines(child, parentDataRef, parentViewVarName, entrie
                     childDataRef,
                     childVarName,
                     entriesByFunctionName,
+                    rootEntriesByName,
+                    currentRoot,
                     usedLocalNames,
                     new Set([...visiting, childEntry.functionName]),
                 ))
@@ -591,7 +663,7 @@ function buildExpandedChildLines(child, parentDataRef, parentViewVarName, entrie
  * Генерирует единственную функцию для root view.
  */
 function buildExpandedViewFunction(props) {
-    const { functionName, view, entriesByFunctionName } = props;
+    const { functionName, view, entriesByFunctionName, rootEntriesByName } = props;
     const usedLocalNames = new Set();
     const childBlocks = Array.isArray(view.children)
         ? collapseChildrenForObjectLiteral(view.children).map((child) =>
@@ -600,6 +672,8 @@ function buildExpandedViewFunction(props) {
                 view.dataName,
                 "view",
                 entriesByFunctionName,
+                rootEntriesByName,
+                view,
                 usedLocalNames,
                 new Set([view.functionName]),
             )
@@ -613,12 +687,13 @@ function buildExpandedViewFunction(props) {
 /**
  * Генерирует секцию одного root view: root data constant и root function.
  */
-function buildViewSection(root, entriesByFunctionName, packCamel) {
-    const dataConstant = `export const ${root.dataName} = ${buildViewDataLiteral(root, packCamel, entriesByFunctionName)};`;
+function buildViewSection(root, entriesByFunctionName, packCamel, rootEntriesByName) {
+    const dataConstant = `export const ${root.dataName} = ${buildViewDataLiteral(root, packCamel, entriesByFunctionName, rootEntriesByName, root)};`;
     const viewFunction = buildExpandedViewFunction({
         functionName: root.functionName,
         view: root,
         entriesByFunctionName,
+        rootEntriesByName,
     });
 
     return `${buildSectionHeader(`VIEW: ${root.functionName}`)}\n\n${dataConstant}\n\n${viewFunction}`;
@@ -633,7 +708,8 @@ function buildViewsTs(props) {
         (Array.isArray(viewEntries) ? viewEntries : []).filter((entry) => entry.kind !== "text")
     );
     const entriesByFunctionName = new Map(resolvedEntries.map((entry) => [entry.functionName, entry]));
-    const rootEntries = findRootViewEntries(resolvedEntries);
+    const rootEntries = findPageRootViewEntries(resolvedEntries);
+    const rootEntriesByName = buildRootEntriesByName(rootEntries);
     const assetImportBlock = hasAssetChildren(resolvedEntries)
         ? `import { ${packCamel}AutoAssets } from "./${packFileName}-assets";\n`
         : "";
@@ -646,7 +722,7 @@ function buildViewsTs(props) {
         ...(hasTextChildren(resolvedEntries) ? ["createTextChild"] : []),
         ...(hasAssetChildren(resolvedEntries) || hasTextChildren(resolvedEntries) || hasViewChildren(resolvedEntries) ? ["setLeftTop"] : []),
     ];
-    const viewSections = rootEntries.map((root) => buildViewSection(root, entriesByFunctionName, packCamel));
+    const viewSections = rootEntries.map((root) => buildViewSection(root, entriesByFunctionName, packCamel, rootEntriesByName));
 
     return `// This file is auto-generated by figma2assets plugin. Do not edit manually.
 ${assetImportBlock}${textImportBlock}import {
@@ -744,6 +820,9 @@ module.exports = {
     capitalizeIdentifier,
     buildViewConstantsBlock,
     findRootViewEntries,
+    findPageRootViewEntries,
+    buildRootEntriesByName,
+    findRootReferenceEntry,
     collectNestedViewEntries,
     buildExpandedChildLines,
     buildExpandedViewFunction,
