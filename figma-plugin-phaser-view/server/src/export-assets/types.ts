@@ -36,6 +36,8 @@ export interface PosObject {
   setPosition(x: number, y: number): this;
 }
 
+export type VisibleObject = PosObject & { setVisible: (value: boolean)=>void }
+
 
 export type PosGameObject = Phaser.GameObjects.GameObject & PosObject;
 

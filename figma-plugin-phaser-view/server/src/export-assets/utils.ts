@@ -10,7 +10,7 @@ import {
   IAutoViewRefChildData,
   ITextViewOptions,
   PosGameObject,
-  PosObject
+  PosObject, VisibleObject
 } from "./types";
 
 /**
@@ -305,3 +305,42 @@ export function renderViewChild(
     y: assetChild.y,
   });
 }
+
+
+/** Сделать switch из контейнера, первые 2 children считаются on-off состояниями **/
+export function makeSwitch({ initState, view, onSwitch }: {
+  initState: boolean;
+  view: Phaser.GameObjects.Container;
+  onSwitch: (switched: boolean)=>void;
+}){
+  const onChild = view.getAll()[0] as unknown as VisibleObject;
+  const offChild = view.getAll()[1] as unknown as VisibleObject;
+  let state = initState;
+
+  const updateState = (newState:boolean)=>{
+    state = newState;
+    onChild.setVisible(state);
+    offChild.setVisible(!state);
+  }
+
+  const handleSwitch = ()=>{
+    updateState(!state);
+    onSwitch(state);
+  };
+
+  makeContainerInteractive(view);
+  view.on(Phaser.Input.Events.GAMEOBJECT_POINTER_DOWN, handleSwitch);
+  updateState(state);
+  return view;
+}
+
+
+
+/** решает кучу проблем с дефолтным setInteractive **/
+export const makeContainerInteractive = (obj: Phaser.GameObjects.Container)=>{
+  const bounds = obj.getBounds();
+  obj.setSize(bounds.width, bounds.height);
+  obj.setInteractive({ useHandCursor: true });
+  return obj;
+}
+
