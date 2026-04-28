@@ -610,7 +610,10 @@ function collectNestedBuilderEntries(root, entriesByFunctionName, rootEntriesByN
     const result = [];
     const seen = new Set();
 
-    function visit(entry, currentRoot) {
+    /**
+     * Рекурсивно собирает private builders для nested view и запоминает прямой путь к data каждого builder.
+     */
+    function collectNestedBuilderEntryRefs(entry, currentRoot, parentDataRef) {
         if (!entry || !Array.isArray(entry.children)) return;
 
         collapseChildrenForObjectLiteral(entry.children).forEach((child) => {
@@ -620,15 +623,20 @@ function collectNestedBuilderEntries(root, entriesByFunctionName, rootEntriesByN
             const childEntry = entriesByFunctionName.get(child.viewFunctionName);
             if (!childEntry) return;
 
+            const childDataRef = buildObjectAccess(`${parentDataRef}.children`, child.name);
+
             if (!seen.has(childEntry.functionName)) {
                 seen.add(childEntry.functionName);
-                result.push(childEntry);
+                result.push({
+                    entry: childEntry,
+                    dataRef: childDataRef,
+                });
             }
-            visit(childEntry, currentRoot);
+            collectNestedBuilderEntryRefs(childEntry, currentRoot, childDataRef);
         });
     }
 
-    visit(root, root);
+    collectNestedBuilderEntryRefs(root, root, root.dataName);
     return result;
 }
 
@@ -686,7 +694,7 @@ function buildDirectChildLines(child, parentDataRef, parentViewVarName, entriesB
         const childEntry = entriesByFunctionName.get(child.viewFunctionName);
         const builderName = buildPrivateBuilderName(childEntry);
 
-        return `  const ${childVarName} = ${builderName}(scene, ${childDataRef});\n  setLeftTop(\n    ${childVarName},\n    ${childDataRef}.x - ${parentDataRef}.width / 2,\n    ${childDataRef}.y - ${parentDataRef}.height / 2,\n  );\n  ${parentViewVarName}.add(${childVarName});`;
+        return `  const ${childVarName} = ${builderName}(scene);\n  setLeftTop(\n    ${childVarName},\n    ${childDataRef}.x - ${parentDataRef}.width / 2,\n    ${childDataRef}.y - ${parentDataRef}.height / 2,\n  );\n  ${parentViewVarName}.add(${childVarName});`;
     }
 
     if (child.type === "text") {
@@ -711,11 +719,12 @@ function buildViewBuilderFunction(props) {
         currentRoot,
     } = props;
     const usedLocalNames = new Set();
+    const builderDataRef = isExported ? dataRef : "data";
     const childBlocks = Array.isArray(view.children)
         ? collapseChildrenForObjectLiteral(view.children).map((child) =>
             buildDirectChildLines(
                 child,
-                dataRef,
+                builderDataRef,
                 "view",
                 entriesByFunctionName,
                 rootEntriesByName,
@@ -726,13 +735,13 @@ function buildViewBuilderFunction(props) {
         : [];
     const childSection = childBlocks.length > 0 ? `\n\n${childBlocks.join("\n\n")}` : "";
     const exportPrefix = isExported ? "export " : "";
-    const dataParam = isExported ? "" : ", data: any";
-    const dataSource = isExported ? dataRef : "data";
+    const dataInit = isExported ? "" : `\n  const data = ${dataRef};`;
+    const dataSource = builderDataRef;
     const comment = isExported
         ? ""
         : `/**\n * Собирает вложенный view только из его direct children.\n * Родительский builder вызывает эту функцию и не разворачивает внутренности сам.\n */\n`;
 
-    return `${comment}${exportPrefix}function ${functionName}(scene: Phaser.Scene${dataParam}): Phaser.GameObjects.Container {\n  const view = createContainerFromViewData(scene, ${dataSource});${childSection}\n\n  return view;\n}`;
+    return `${comment}${exportPrefix}function ${functionName}(scene: Phaser.Scene): Phaser.GameObjects.Container {${dataInit}\n  const view = createContainerFromViewData(scene, ${dataSource});${childSection}\n\n  return view;\n}`;
 }
 
 /**
@@ -749,11 +758,11 @@ function buildViewSection(root, entriesByFunctionName, packCamel, rootEntriesByN
         rootEntriesByName,
         currentRoot: root,
     });
-    const privateBuilders = collectNestedBuilderEntries(root, entriesByFunctionName, rootEntriesByName).map((entry) =>
+    const privateBuilders = collectNestedBuilderEntries(root, entriesByFunctionName, rootEntriesByName).map((builder) =>
         buildViewBuilderFunction({
-            functionName: buildPrivateBuilderName(entry),
-            view: entry,
-            dataRef: "data",
+            functionName: buildPrivateBuilderName(builder.entry),
+            view: builder.entry,
+            dataRef: builder.dataRef,
             isExported: false,
             entriesByFunctionName,
             rootEntriesByName,
