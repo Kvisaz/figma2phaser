@@ -32,7 +32,7 @@ export interface IAddAssetNineProps {
 export interface PosObject {
   x: number;
   y: number;
-  getBounds(): { left: number; top: number };
+  getBounds(): Phaser.Geom.Rectangle; // критически важно для совместимости с Align
   setPosition(x: number, y: number): this;
 }
 
