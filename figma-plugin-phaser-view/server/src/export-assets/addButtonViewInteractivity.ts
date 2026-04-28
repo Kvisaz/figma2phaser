@@ -4,6 +4,12 @@ const BUTTON_BASE_SCALE_DATA_KEY = "button.interactivity.BaseScale";
 const BUTTON_POINTER_INSIDE_DATA_KEY = "button.interactivity.PointerInside";
 const BUTTON_RESTORE_TIMER_DATA_KEY = "button.interactivity.RestoreTimer";
 
+export const ButtonEvents = {
+  onClick: 'onButtonClick',
+  onHover: 'onButtonHover',
+  onOut: 'onButtonOut',
+} as const;
+
 type Pointer = Phaser.Input.Pointer;
 type Scene = Phaser.Scene;
 type GameObject = Phaser.GameObjects.GameObject;
@@ -20,7 +26,7 @@ export function addButtonInteractivity(scene: Scene) {
       gameObject: GameObject,
   ) => {
     if (!isButtonGameObject(gameObject)) return;
-    handleButtonPointerDown(scene, gameObject);
+    handleButtonPointerDown(gameObject);
   };
 
   const onPointerOver = (
@@ -59,17 +65,25 @@ function isButtonGameObject(gameObject: GameObject): gameObject is ButtonGameObj
   return gameObject.getData("button") === true;
 }
 
-function handleButtonPointerDown(scene: Scene, button: ButtonGameObject) {
+function handleButtonPointerDown(button: ButtonGameObject) {
+  const scene = button.scene;
+  if(scene==null) return;
+
   ensureButtonBaseScale(button);
   button.setData(BUTTON_POINTER_INSIDE_DATA_KEY, true);
 
   cancelHoverRestoreTimer(button);
   restoreButtonBaseScale(button);
   scheduleHoverRestore(scene, button);
-  emitButtonClick(scene, button);
+  scene.events.emit(ButtonEvents.onClick, { gameObjectName: button.name });
 }
 
 function handleButtonPointerOver(button: ButtonGameObject) {
+  const scene = button.scene;
+  if(scene==null) return;
+
+  scene.events.emit(ButtonEvents.onHover, { gameObjectName: button.name });
+
   ensureButtonBaseScale(button);
   button.setData(BUTTON_POINTER_INSIDE_DATA_KEY, true);
 
@@ -78,11 +92,17 @@ function handleButtonPointerOver(button: ButtonGameObject) {
 }
 
 function handleButtonPointerOut(button: ButtonGameObject) {
+  const scene = button.scene;
+  if(scene==null) return;
+
+  scene.events.emit(ButtonEvents.onOut, { gameObjectName: button.name });
+
   ensureButtonBaseScale(button);
   button.setData(BUTTON_POINTER_INSIDE_DATA_KEY, false);
 
   cancelHoverRestoreTimer(button);
   restoreButtonBaseScale(button);
+
 }
 
 function ensureButtonBaseScale(button: ButtonGameObject): ButtonScale {
@@ -130,10 +150,6 @@ function applyButtonHoverScale(button: ButtonGameObject) {
 function restoreButtonBaseScale(button: ButtonGameObject) {
   const baseScale = ensureButtonBaseScale(button);
   button.setScale(baseScale.x, baseScale.y);
-}
-
-function emitButtonClick(scene: Scene, button: ButtonGameObject) {
-  scene.events.emit("onClick", { gameObjectName: button.name });
 }
 
 export function testButtonViewInteractivity(scene: Scene) {
