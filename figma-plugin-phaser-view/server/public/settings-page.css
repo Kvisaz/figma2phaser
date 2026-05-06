@@ -49,7 +49,8 @@ label {
   gap: 10px;
 }
 
-input {
+input,
+select {
   min-width: 0;
   border: 1px solid #c8beac;
   border-radius: 12px;

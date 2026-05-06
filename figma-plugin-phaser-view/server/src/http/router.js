@@ -36,6 +36,7 @@ function handleHealthRequest(response) {
         gameRootDir: GAME_ROOT_DIR,
         atlasOutputDir: settings.atlasOutputDir,
         tsOutputDir: settings.tsOutputDir,
+        exportMode: settings.exportMode,
     });
 }
 

@@ -4,7 +4,7 @@ export type AutoAssetKind = "image" | "nine";
 export interface IAutoAssetData {
   readonly name: string;
   readonly url: string;
-  readonly frameName: string;
+  readonly frameName: string | null;
   readonly width: number;
   readonly height: number;
   readonly x: number;

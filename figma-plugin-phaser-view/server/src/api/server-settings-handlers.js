@@ -63,6 +63,7 @@ async function handleChooseDirectoryRequest(request, response) {
     const settings = writeSettings({
         atlasOutputDir: payload.atlasOutputDir,
         tsOutputDir: payload.tsOutputDir,
+        exportMode: payload.exportMode,
         [kind === "atlas" ? "atlasOutputDir" : "tsOutputDir"]: directory,
     });
 

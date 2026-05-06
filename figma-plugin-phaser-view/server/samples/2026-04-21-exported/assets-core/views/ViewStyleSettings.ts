@@ -174,7 +174,7 @@ export class ViewStyleSettings extends Phaser.GameObjects.Container {
           0,
           0,
           asset.url,
-          asset.frameName,
+          asset.frameName ?? undefined,
           data.width,
           data.height,
           asset.ninePadding ?? 20,
@@ -182,15 +182,11 @@ export class ViewStyleSettings extends Phaser.GameObjects.Container {
           asset.ninePadding ?? 20,
           asset.ninePadding ?? 20,
         )
-        : new Phaser.GameObjects.Image(scene, 0, 0, asset.url, asset.frameName);
+        : new Phaser.GameObjects.Image(scene, 0, 0, asset.url, asset.frameName ?? undefined);
 
       node.name = asset.name || "";
       setLeftTop(node, data.x - viewWidth / 2, data.y - viewHeight / 2);
       this.add(node);
     });
   }
-}
-
-export function createViewStyleSettings(props: IViewStyleSettingsProps): ViewStyleSettings {
-  return new ViewStyleSettings(props);
 }

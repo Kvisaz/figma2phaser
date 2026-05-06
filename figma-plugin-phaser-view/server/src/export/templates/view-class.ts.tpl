@@ -15,5 +15,3 @@ export class {{className}} extends Phaser.GameObjects.Container {
 {{constructorBody}}
   }
 }
-
-{{factoryFunction}}

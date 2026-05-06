@@ -39,7 +39,7 @@ export function addAssetImage(props: IAddAssetImageProps): Phaser.GameObjects.Im
   const { scene, asset, x, y } = props;
   const targetX = x ?? asset.x;
   const targetY = y ?? asset.y;
-  const imageNode = new Phaser.GameObjects.Image(scene, 0, 0, asset.url, asset.frameName);
+  const imageNode = new Phaser.GameObjects.Image(scene, 0, 0, asset.url, asset.frameName ?? undefined);
   imageNode.name = asset.name || "";
   return setLeftTop(imageNode, targetX, targetY);
 }
@@ -60,7 +60,7 @@ export function addAssetNine(props: IAddAssetNineProps): Phaser.GameObjects.Nine
       0,
       0,
       asset.url,
-      asset.frameName,
+      asset.frameName ?? undefined,
       targetWidth,
       targetHeight,
       padding,

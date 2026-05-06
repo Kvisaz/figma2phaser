@@ -24,4 +24,5 @@ server.listen(PORT, () => {
     console.log(`[figma2phaser] GAME_ROOT_DIR=${GAME_ROOT_DIR}`);
     console.log(`[figma2phaser] ATLAS_OUTPUT_DIR=${settings.atlasOutputDir}`);
     console.log(`[figma2phaser] TS_OUTPUT_DIR=${settings.tsOutputDir}`);
+    console.log(`[figma2phaser] EXPORT_MODE=${settings.exportMode}`);
 });

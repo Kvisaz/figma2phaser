@@ -3,6 +3,9 @@ const { ATLAS_OUTPUT_DIR, SCENE_OUTPUT_DIR, SETTINGS_FILE_PATH } = require("../.
 const { writeTextFile, ensureDirectoryExists } = require("../filesystem/fs-utils");
 const { normalizeOutputDirectory } = require("../utils/path-utils");
 
+const EXPORT_MODE_ATLAS = "atlas";
+const EXPORT_MODE_PNG = "png";
+
 /**
  * ============================================================================
  * Persistent Settings
@@ -13,12 +16,17 @@ const { normalizeOutputDirectory } = require("../utils/path-utils");
  */
 
 /**
- * Applies defaults and absolute-path normalization to settings.
+ * Applies defaults and normalization to settings.
  */
+function normalizeExportMode(exportMode) {
+    return exportMode === EXPORT_MODE_PNG ? EXPORT_MODE_PNG : EXPORT_MODE_ATLAS;
+}
+
 function normalizeSettings(settings) {
     return {
         atlasOutputDir: normalizeOutputDirectory(settings.atlasOutputDir || ATLAS_OUTPUT_DIR),
         tsOutputDir: normalizeOutputDirectory(settings.tsOutputDir || SCENE_OUTPUT_DIR),
+        exportMode: normalizeExportMode(settings.exportMode),
     };
 }
 
@@ -29,6 +37,7 @@ function readSettings() {
     const defaults = {
         atlasOutputDir: ATLAS_OUTPUT_DIR,
         tsOutputDir: SCENE_OUTPUT_DIR,
+        exportMode: EXPORT_MODE_ATLAS,
     };
 
     try {
@@ -89,6 +98,9 @@ function validateDirectoryPath(directoryPath) {
 }
 
 module.exports = {
+    EXPORT_MODE_ATLAS,
+    EXPORT_MODE_PNG,
+    normalizeExportMode,
     normalizeSettings,
     readSettings,
     writeSettings,

@@ -1,7 +1,7 @@
 const path = require("path");
 const { sendJson } = require("../http/http-response");
 const { copyDirectoryContents, writeBinaryFile, writeTextFile } = require("../filesystem/fs-utils");
-const { readSettings } = require("../settings/settings-store");
+const { EXPORT_MODE_PNG, readSettings } = require("../settings/settings-store");
 const { readJsonBody } = require("../utils/request-body");
 const { collectManifestItemsByFileName, validateExportPayload } = require("../export/export-payload");
 const {
@@ -20,8 +20,8 @@ const EXPORT_ASSETS_SOURCE_DIR = path.join(__dirname, "../export-assets");
  * Figma Export API
  * ============================================================================
  *
- * Receives exported PNG data from the Figma plugin and writes atlas plus Phaser
- * TypeScript files to the configured game project folders.
+ * Receives exported PNG data from the Figma plugin and writes atlas/PNG assets
+ * plus Phaser TypeScript files to the configured game project folders.
  */
 
 /**
@@ -46,10 +46,13 @@ function buildNormalizedManifest(payload, packName, manifestItemsByFileName) {
  */
 function buildOutputFilePaths(outputSettings, packName) {
     const tsPackOutputDir = path.join(outputSettings.tsOutputDir, packName);
+    const pngOutputDir = path.join(outputSettings.atlasOutputDir, "png");
 
     return {
+        exportMode: outputSettings.exportMode,
         atlasPngFilePath: path.join(outputSettings.atlasOutputDir, `${packName}.png`),
         atlasJsonFilePath: path.join(outputSettings.atlasOutputDir, `${packName}.json`),
+        pngOutputDir,
         assetsTsFilePath: path.join(tsPackOutputDir, "assets.ts"),
         viewsIndexTsFilePath: path.join(tsPackOutputDir, "views", "index.ts"),
         exportAssetsTargetDir: tsPackOutputDir,
@@ -83,17 +86,42 @@ function getPackedAtlasBuffers(packedFilesByName, packName) {
 }
 
 /**
- * Writes packed atlas and generated TypeScript source files.
+ * Writes separate PNG files and returns written paths.
  */
-function writeExportFiles(filePaths, atlasPngBuffer, atlasJsonText, sceneSources) {
-    writeBinaryFile(filePaths.atlasPngFilePath, atlasPngBuffer);
-    writeTextFile(filePaths.atlasJsonFilePath, atlasJsonText);
+function writePngFiles(pngOutputDir, images) {
+    return images.map((image) => {
+        const filePath = path.join(pngOutputDir, path.basename(image.path));
+        writeBinaryFile(filePath, image.contents);
+        return filePath;
+    });
+}
+
+/**
+ * Writes atlas/PNG assets and generated TypeScript source files.
+ */
+function writeExportFiles(filePaths, atlasPngBuffer, atlasJsonText, sceneSources, pngImages = []) {
+    const filesWritten = [];
+
+    if (filePaths.exportMode === EXPORT_MODE_PNG) {
+        filesWritten.push(...writePngFiles(filePaths.pngOutputDir, pngImages));
+    } else {
+        writeBinaryFile(filePaths.atlasPngFilePath, atlasPngBuffer);
+        writeTextFile(filePaths.atlasJsonFilePath, atlasJsonText);
+        filesWritten.push(filePaths.atlasPngFilePath, filePaths.atlasJsonFilePath);
+    }
+
     writeTextFile(filePaths.assetsTsFilePath, sceneSources.assetsTs);
     writeTextFile(filePaths.viewsIndexTsFilePath, sceneSources.viewIndexTs || sceneSources.viewTs);
+    filesWritten.push(filePaths.assetsTsFilePath, filePaths.viewsIndexTsFilePath);
+
     (Array.isArray(sceneSources.viewFiles) ? sceneSources.viewFiles : []).forEach((file) => {
-        writeTextFile(path.join(filePaths.tsOutputDir, file.relativePath), file.code);
+        const filePath = path.join(filePaths.tsOutputDir, file.relativePath);
+        writeTextFile(filePath, file.code);
+        filesWritten.push(filePath);
     });
+
     copyDirectoryContents(EXPORT_ASSETS_SOURCE_DIR, filePaths.exportAssetsTargetDir);
+    return filesWritten;
 }
 
 /**
@@ -115,40 +143,38 @@ async function handleExportRequest(request, response) {
     );
 
     const manifestItemsByFileName = collectManifestItemsByFileName(payload.manifest);
-    const texturePackerImages = buildTexturePackerImages(payload.files);
-    const packedFiles = await packAtlasWithFreeTexPacker(packName, texturePackerImages);
-    const packedFilesByName = extractPackedFilesByName(packedFiles);
-    const { atlasPngBuffer, atlasJsonBuffer } = getPackedAtlasBuffers(packedFilesByName, packName);
-    const atlasJsonText = rewriteAtlasJsonMetaImage(
-        atlasJsonBuffer.toString("utf8"),
-        packName
-    );
     const normalizedManifest = buildNormalizedManifest(payload, packName, manifestItemsByFileName);
+    const texturePackerImages = buildTexturePackerImages(payload.files);
+    const filePaths = buildOutputFilePaths(outputSettings, packName);
+    let atlasPngBuffer = null;
+    let atlasJsonText = null;
+
+    if (outputSettings.exportMode !== EXPORT_MODE_PNG) {
+        const packedFiles = await packAtlasWithFreeTexPacker(packName, texturePackerImages);
+        const packedFilesByName = extractPackedFilesByName(packedFiles);
+        const packedAtlas = getPackedAtlasBuffers(packedFilesByName, packName);
+        atlasPngBuffer = packedAtlas.atlasPngBuffer;
+        atlasJsonText = rewriteAtlasJsonMetaImage(
+            packedAtlas.atlasJsonBuffer.toString("utf8"),
+            packName
+        );
+    }
+
     const sceneSources = buildPhaserSceneSources({
         packName,
         manifest: normalizedManifest,
         atlasBasePath,
+        exportMode: outputSettings.exportMode,
     });
-    const filePaths = buildOutputFilePaths(outputSettings, packName);
-
-    writeExportFiles(filePaths, atlasPngBuffer, atlasJsonText, sceneSources);
-
-    const filesWritten = [
-        filePaths.atlasPngFilePath,
-        filePaths.atlasJsonFilePath,
-        filePaths.assetsTsFilePath,
-        filePaths.viewsIndexTsFilePath,
-    ];
-
-    (Array.isArray(sceneSources.viewFiles) ? sceneSources.viewFiles : []).forEach((file) => {
-        filesWritten.push(path.join(filePaths.tsOutputDir, file.relativePath));
-    });
+    const filesWritten = writeExportFiles(filePaths, atlasPngBuffer, atlasJsonText, sceneSources, texturePackerImages);
 
     sendJson(response, 200, {
         ok: true,
         message: "Export written to game folder",
         packName,
+        exportMode: outputSettings.exportMode,
         atlasOutputDir: outputSettings.atlasOutputDir,
+        pngOutputDir: filePaths.pngOutputDir,
         tsOutputDir: filePaths.tsOutputDir,
         filesWritten,
     });
@@ -158,6 +184,7 @@ module.exports = {
     buildNormalizedManifest,
     buildOutputFilePaths,
     getPackedAtlasBuffers,
+    writePngFiles,
     writeExportFiles,
     handleExportRequest,
 };

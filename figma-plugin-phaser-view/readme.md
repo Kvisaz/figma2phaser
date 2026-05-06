@@ -46,6 +46,7 @@ http://localhost:3456/
 
 - `atlasOutputDir` - папку для atlas `.png/.json`;
 - `tsOutputDir` - папку для сгенерированных TypeScript-файлов.
+- `exportMode` - `Экспорт атласов` или `Экспорт PNG`.
 
 Выбор папок и ручное редактирование полей на server page сохраняются автоматически в `server/settings.local.json`.
 
@@ -105,7 +106,7 @@ figma-plugin-phaser-view/
 - для `manifest.items` и `[packName]/assets.ts` используются актуальные `x/y/width/height` детей `assets*` frame;
 - координаты children в `views/*.ts` считаются относительно bounds соответствующего `view`.
 - `name` из Figma ставится в `GameObject.name`.
-- safe `functionName` используется для TypeScript identifiers generated classes и compatibility `createXxx(...)`.
+- safe `functionName` остается в manifest, но public generated API теперь только class exports.
 - Каждый renderable `view*` / `button*` получает отдельный class file в `views/`.
 - Вложенные `view*` / `button*` создаются как nested class instances, а не private builder-функциями.
 - Text data кладется локально в файл view class и содержит только `localeMap` и `style`.
@@ -243,7 +244,7 @@ export const viewMainData = {
 - `[packName].text.ts` не генерируется;
 - asset data копируется в локальную `[viewCamel]Assets` константу;
 - text data копируется в локальную `[viewCamel]Texts` константу и содержит только `localeMap` и `style`;
-- compatibility factory `createXxx(props)` может генерироваться рядом с class, но основной API - class.
+- helper factory `createView*` / `createButton*` не генерируются; public API - только class.
 
 Упрощенный пример:
 
@@ -439,8 +440,6 @@ manifest.warnings.unsafeNames
 Сервер пишет:
 
 ```text
-[atlasOutputDir]/[packName].png
-[atlasOutputDir]/[packName].json
 [tsOutputDir]/[packName]/assets.ts
 [tsOutputDir]/[packName]/views/index.ts
 [tsOutputDir]/[packName]/views/[ClassName].ts
@@ -448,6 +447,19 @@ manifest.warnings.unsafeNames
 [tsOutputDir]/[packName]/utils/utils.ts
 [tsOutputDir]/[packName]/utils/scene-locale.ts
 [tsOutputDir]/[packName]/utils/addButtonViewInteractivity.ts
+```
+
+В режиме `Экспорт атласов` дополнительно пишутся:
+
+```text
+[atlasOutputDir]/[packName].png
+[atlasOutputDir]/[packName].json
+```
+
+В режиме `Экспорт PNG` вместо atlas файлов пишутся отдельные PNG:
+
+```text
+[atlasOutputDir]/png/[fileName].png
 ```
 
 `packName` по умолчанию берется из имени первого top-level `assets*` frame на текущей странице, но его можно отредактировать в UI plugin. Перед экспортом значение проходит безопасную `slugify`-обработку и используется как имя папки внутри `tsOutputDir`.
@@ -469,13 +481,14 @@ assets/chibi core -> assets-chibi-core
 - `serverUrl` - адрес companion server, по умолчанию `http://localhost:3456`;
 - `packName` - редактируемое имя atlas pack и папки generated TypeScript;
 - `atlasBasePath` - runtime URL для Phaser preload, например `./assets/atlases/`;
-- `atlasOutputDir` - абсолютная папка на диске для atlas `.png/.json`;
+- `exportMode` - режим server export: `atlas` для atlas `.png/.json` или `png` для отдельных PNG в подпапке `png/`;
+- `atlasOutputDir` - абсолютная папка на диске для atlas `.png/.json` или базовая папка для `png/`;
 - `tsOutputDir` - абсолютная папка на диске для `.ts` файлов.
 
 Важно:
 
 - `atlasBasePath` - путь загрузки внутри игры.
-- `atlasOutputDir` - filesystem path, куда сервер пишет atlas.
+- `atlasOutputDir` - filesystem path, куда сервер пишет atlas или подпапку `png/`.
 - `tsOutputDir` - filesystem path базовой папки, куда сервер пишет TypeScript в подпапку `[packName]`.
 
 `atlasBasePath` и `serverUrl` задаются в Figma plugin.
@@ -606,7 +619,8 @@ http://localhost:3456/
   "ok": true,
   "settings": {
     "atlasOutputDir": "/path/to/public/assets/atlases",
-    "tsOutputDir": "/path/to/src/autogen"
+    "tsOutputDir": "/path/to/src/autogen",
+    "exportMode": "atlas"
   }
 }
 ```
@@ -618,7 +632,8 @@ http://localhost:3456/
 ```json
 {
   "atlasOutputDir": "/path/to/public/assets/atlases",
-  "tsOutputDir": "/path/to/src/autogen"
+  "tsOutputDir": "/path/to/src/autogen",
+  "exportMode": "atlas"
 }
 ```
 
@@ -630,7 +645,8 @@ http://localhost:3456/
 {
   "kind": "atlas",
   "atlasOutputDir": "/current/atlas/path",
-  "tsOutputDir": "/current/ts/path"
+  "tsOutputDir": "/current/ts/path",
+  "exportMode": "png"
 }
 ```
 
@@ -640,7 +656,8 @@ http://localhost:3456/
 {
   "kind": "ts",
   "atlasOutputDir": "/current/atlas/path",
-  "tsOutputDir": "/current/ts/path"
+  "tsOutputDir": "/current/ts/path",
+  "exportMode": "atlas"
 }
 ```
 

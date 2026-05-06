@@ -266,8 +266,7 @@ Keep branching logic in JS. Template files should receive prepared strings:
 - `assetConstants`;
 - `propsInterface`;
 - `className`;
-- `constructorBody`;
-- optional `factoryFunction`.
+- `constructorBody`.
 
 ### 7. Props and compatibility
 
@@ -286,15 +285,7 @@ Specialized templates may add props:
 - `fontSize?`;
 - `locale?`;
 
-For a migration period, a thin factory can be generated next to the class:
-
-```ts
-export function createButtonSelectStyle(props: IButtonSelectStyleProps): ButtonSelectStyle {
-  return new ButtonSelectStyle(props);
-}
-```
-
-This factory should be optional compatibility output, not the main architecture.
+Helper factories `createView*` / `createButton*` are not generated. The public API is the class export itself.
 
 ## Implementation Plan
 
@@ -356,6 +347,7 @@ This factory should be optional compatibility output, not the main architecture.
 11. README points to `todo.md` and describes the new planned output shape.
 12. `packName` is editable in plugin UI and is used as the TypeScript output folder name.
 13. `[packName]-scene.ts` is not generated.
+14. Helper factories `createView*` / `createButton*` are not generated.
 
 ## Important Notes
 

@@ -3,6 +3,10 @@
 Новые изменения добавляются сверху,  в том числе под той же датой - последние добавляются первыми
 
 ## 06.05.2026
+- Зафиксировано: частично прозрачные/оборванные PNG в atlas могут быть результатом Figma export glitch или состояния source node в `assets*` frame; packer не триммит и не режет такие изображения (`allowTrim: false`).
+- Generated view files больше не содержат helper factories `createView*` / `createButton*`; `views/index.ts` экспортирует только classes.
+- В server settings добавлен режим export: `Экспорт атласов` сохраняет текущее поведение, `Экспорт PNG` пишет отдельные PNG в `[atlasOutputDir]/png/`.
+- В PNG-режиме generated assets и view classes используют прямые PNG texture keys вместо atlas frame references.
 - Generated TypeScript теперь складывается в отдельную папку pack: `[tsOutputDir]/[packName]/`.
 - Asset registry генерируется как `assets.ts`; `views/index.ts` экспортирует view classes из `views/*.ts`.
 - Preview scene file `[packName]-scene.ts` больше не генерируется.

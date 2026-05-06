@@ -474,7 +474,11 @@
 
         hideServerWarning();
         appendLog(`Готово: записано файлов ${responseJson.filesWritten.length}`);
-        appendLog(`Atlas: ${responseJson.atlasOutputDir}`);
+        if (responseJson.exportMode === "png") {
+          appendLog(`PNG: ${responseJson.pngOutputDir}`);
+        } else {
+          appendLog(`Atlas: ${responseJson.atlasOutputDir}`);
+        }
         appendLog(`TS: ${responseJson.tsOutputDir}`);
         postToPlugin({ type: "EXPORT_DONE" });
       } catch (error) {

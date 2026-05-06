@@ -14,8 +14,8 @@ Status: baseline реализован. Generated output теперь пишет 
    - Barrel/re-export живет в `[tsOutputDir]/[packName]/views/index.ts`.
 
 2. Все views генерируются как классы.
-   - Старые `createXxx(...)` factory-функции больше не являются основным output.
-   - Если нужна совместимость, допускается thin factory рядом с class, но это временный слой.
+   - Старые `createXxx(...)` factory-функции больше не генерируются.
+   - Barrel export публикует только class names.
 
 3. Text data больше не выводится в отдельный `[packName].text.ts`.
    - Тексты конкретного root view кладутся в его же файл перед class.

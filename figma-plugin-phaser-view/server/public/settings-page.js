@@ -1,5 +1,6 @@
 const atlasInput = document.getElementById("atlasOutputDir");
 const tsInput = document.getElementById("tsOutputDir");
+const exportModeInput = document.getElementById("exportMode");
 const logNode = document.getElementById("log");
 const serverStatus = document.getElementById("serverStatus");
 const AUTOSAVE_DELAY_MS = 500;
@@ -35,6 +36,7 @@ async function requestJson(url, options) {
 function renderSettings(settings) {
   atlasInput.value = settings.atlasOutputDir;
   tsInput.value = settings.tsOutputDir;
+  exportModeInput.value = settings.exportMode || "atlas";
 }
 
 /**
@@ -46,6 +48,7 @@ async function loadInitialState() {
   renderSettings({
     atlasOutputDir: payload.atlasOutputDir,
     tsOutputDir: payload.tsOutputDir,
+    exportMode: payload.exportMode,
   });
   log("Settings loaded.");
 }
@@ -60,6 +63,7 @@ async function saveSettings(options = {}) {
     body: JSON.stringify({
       atlasOutputDir: atlasInput.value,
       tsOutputDir: tsInput.value,
+      exportMode: exportModeInput.value,
     }),
   });
   renderSettings(payload.settings);
@@ -96,10 +100,11 @@ async function chooseDirectory(kind) {
       kind,
       atlasOutputDir: atlasInput.value,
       tsOutputDir: tsInput.value,
+      exportMode: exportModeInput.value,
     }),
   });
   renderSettings(payload.settings);
-  log((kind === "atlas" ? "Atlas" : "TS") + " folder saved: " + payload.directory);
+  log((kind === "atlas" ? "Atlas / PNG" : "TS") + " folder saved: " + payload.directory);
 }
 
 /**
@@ -112,6 +117,7 @@ async function validateSettings() {
     body: JSON.stringify({
       atlasOutputDir: atlasInput.value,
       tsOutputDir: tsInput.value,
+      exportMode: exportModeInput.value,
     }),
   });
   log(JSON.stringify(payload.checks, null, 2));
@@ -135,5 +141,6 @@ document.getElementById("chooseTs").addEventListener("click", () => {
 
 atlasInput.addEventListener("input", scheduleAutosave);
 tsInput.addEventListener("input", scheduleAutosave);
+exportModeInput.addEventListener("change", scheduleAutosave);
 
 loadInitialState().catch((error) => log("ERROR: " + error.message));

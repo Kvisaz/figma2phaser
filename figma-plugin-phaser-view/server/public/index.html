@@ -15,7 +15,15 @@
 
     <section class="card grid">
       <label>
-        Atlas output folder
+        Export mode
+        <select id="exportMode">
+          <option value="atlas">Экспорт атласов</option>
+          <option value="png">Экспорт PNG</option>
+        </select>
+      </label>
+
+      <label>
+        Atlas / PNG output folder
         <div class="pathRow">
           <input id="atlasOutputDir" />
           <button id="chooseAtlas" type="button">Выбрать папку</button>
