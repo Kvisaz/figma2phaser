@@ -1,7 +1,7 @@
 const path = require("path");
 const { sendJson } = require("../http/http-response");
 const { copyDirectoryContents, writeBinaryFile, writeTextFile } = require("../filesystem/fs-utils");
-const { readSettings, writeSettings } = require("../settings/settings-store");
+const { readSettings } = require("../settings/settings-store");
 const { readJsonBody } = require("../utils/request-body");
 const { collectManifestItemsByFileName, validateExportPayload } = require("../export/export-payload");
 const {
@@ -45,14 +45,15 @@ function buildNormalizedManifest(payload, packName, manifestItemsByFileName) {
  * Resolves output file paths for atlas and TypeScript files.
  */
 function buildOutputFilePaths(outputSettings, packName) {
+    const tsPackOutputDir = path.join(outputSettings.tsOutputDir, packName);
+
     return {
         atlasPngFilePath: path.join(outputSettings.atlasOutputDir, `${packName}.png`),
         atlasJsonFilePath: path.join(outputSettings.atlasOutputDir, `${packName}.json`),
-        assetsTsFilePath: path.join(outputSettings.tsOutputDir, `${packName}-assets.ts`),
-        sceneTsFilePath: path.join(outputSettings.tsOutputDir, `${packName}-scene.ts`),
-        viewTsFilePath: path.join(outputSettings.tsOutputDir, `${packName}.view.ts`),
-        textTsFilePath: path.join(outputSettings.tsOutputDir, `${packName}.text.ts`),
-        exportAssetsTargetDir: outputSettings.tsOutputDir,
+        assetsTsFilePath: path.join(tsPackOutputDir, "assets.ts"),
+        viewsIndexTsFilePath: path.join(tsPackOutputDir, "views", "index.ts"),
+        exportAssetsTargetDir: tsPackOutputDir,
+        tsOutputDir: tsPackOutputDir,
     };
 }
 
@@ -88,11 +89,10 @@ function writeExportFiles(filePaths, atlasPngBuffer, atlasJsonText, sceneSources
     writeBinaryFile(filePaths.atlasPngFilePath, atlasPngBuffer);
     writeTextFile(filePaths.atlasJsonFilePath, atlasJsonText);
     writeTextFile(filePaths.assetsTsFilePath, sceneSources.assetsTs);
-    writeTextFile(filePaths.sceneTsFilePath, sceneSources.sceneTs);
-    writeTextFile(filePaths.viewTsFilePath, sceneSources.viewTs);
-    if (sceneSources.textTs) {
-        writeTextFile(filePaths.textTsFilePath, sceneSources.textTs);
-    }
+    writeTextFile(filePaths.viewsIndexTsFilePath, sceneSources.viewIndexTs || sceneSources.viewTs);
+    (Array.isArray(sceneSources.viewFiles) ? sceneSources.viewFiles : []).forEach((file) => {
+        writeTextFile(path.join(filePaths.tsOutputDir, file.relativePath), file.code);
+    });
     copyDirectoryContents(EXPORT_ASSETS_SOURCE_DIR, filePaths.exportAssetsTargetDir);
 }
 
@@ -103,11 +103,7 @@ async function handleExportRequest(request, response) {
     const payload = await readJsonBody(request);
     validateExportPayload(payload);
 
-    const savedSettings = readSettings();
-    const outputSettings = writeSettings({
-        atlasOutputDir: payload.atlasOutputDir || savedSettings.atlasOutputDir,
-        tsOutputDir: payload.tsOutputDir || savedSettings.tsOutputDir,
-    });
+    const outputSettings = readSettings();
     const packName = sanitizePackName(
         payload.packName ||
         payload.manifest.packName ||
@@ -141,20 +137,19 @@ async function handleExportRequest(request, response) {
         filePaths.atlasPngFilePath,
         filePaths.atlasJsonFilePath,
         filePaths.assetsTsFilePath,
-        filePaths.sceneTsFilePath,
-        filePaths.viewTsFilePath,
+        filePaths.viewsIndexTsFilePath,
     ];
 
-    if (sceneSources.textTs) {
-        filesWritten.push(filePaths.textTsFilePath);
-    }
+    (Array.isArray(sceneSources.viewFiles) ? sceneSources.viewFiles : []).forEach((file) => {
+        filesWritten.push(path.join(filePaths.tsOutputDir, file.relativePath));
+    });
 
     sendJson(response, 200, {
         ok: true,
         message: "Export written to game folder",
         packName,
         atlasOutputDir: outputSettings.atlasOutputDir,
-        tsOutputDir: outputSettings.tsOutputDir,
+        tsOutputDir: filePaths.tsOutputDir,
         filesWritten,
     });
 }

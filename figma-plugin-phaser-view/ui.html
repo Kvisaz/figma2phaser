@@ -167,7 +167,7 @@
   <div class="settingsGrid">
     <label>
       packName
-      <input id="packNameInput" type="text" placeholder="assets-core" readonly />
+      <input id="packNameInput" type="text" placeholder="assets-core" />
     </label>
 
     <label>
@@ -195,8 +195,6 @@
   <script>
     const DEFAULT_ATLAS_BASE_PATH = "./assets/atlases/";
     const DEFAULT_SERVER_URL = "http://localhost:3456";
-    const DEFAULT_ATLAS_OUTPUT_DIR = "/Users/sergeytokarev/work_my/YOUR_GAME_PROJECT/public/assets/atlases";
-    const DEFAULT_TS_OUTPUT_DIR = "/Users/sergeytokarev/work_my/YOUR_GAME_PROJECT/src/autogen";
 
     let isExporting = false;
     let isServerAvailable = false;
@@ -207,8 +205,8 @@
       packName: "",
       atlasBasePath: DEFAULT_ATLAS_BASE_PATH,
       serverUrl: DEFAULT_SERVER_URL,
-      atlasOutputDir: DEFAULT_ATLAS_OUTPUT_DIR,
-      tsOutputDir: DEFAULT_TS_OUTPUT_DIR,
+      atlasOutputDir: "",
+      tsOutputDir: "",
     };
 
     const exportButton = document.getElementById("exportButton");
@@ -279,12 +277,12 @@
     }
 
     function collectSettingsFromUi() {
+      const packNameValue = String(packNameInput.value || "").trim();
       settings = {
         ...settings,
+        packName: packNameValue ? slugify(packNameValue) : "",
         atlasBasePath: normalizeAtlasBasePath(atlasBasePathInput.value),
         serverUrl: normalizeServerUrl(serverUrlInput.value),
-        atlasOutputDir: normalizeDirectoryPath(settings.atlasOutputDir),
-        tsOutputDir: normalizeDirectoryPath(settings.tsOutputDir),
       };
       renderSettings();
       return settings;
@@ -296,10 +294,9 @@
     function getPersistedSettings() {
       const nextSettings = collectSettingsFromUi();
       return {
+        packName: nextSettings.packName,
         atlasBasePath: nextSettings.atlasBasePath,
         serverUrl: nextSettings.serverUrl,
-        atlasOutputDir: nextSettings.atlasOutputDir,
-        tsOutputDir: nextSettings.tsOutputDir,
       };
     }
 
@@ -320,13 +317,14 @@
     }
 
     /**
-     * Removes stale stored fields that are derived from the current Figma page.
+     * Removes stale stored fields that belong to the companion server.
      */
     function normalizeLoadedSettings(loadedSettings) {
       const normalized = {
         ...(loadedSettings || {}),
       };
-      delete normalized.packName;
+      delete normalized.atlasOutputDir;
+      delete normalized.tsOutputDir;
       return normalized;
     }
 
@@ -375,7 +373,9 @@
       latestSelectionDiagnostic = latestPageState && latestPageState.selection;
 
       if (latestPageState && latestPageState.scan) {
-        settings.packName = latestPageState.scan.assetsPackName || "";
+        if (!settings.packName) {
+          settings.packName = latestPageState.scan.assetsPackName || "";
+        }
         renderSettings();
         appendLog(formatPageScanDiagnostic(latestPageState.scan));
       }
@@ -437,22 +437,6 @@
       }
     }
 
-    async function saveServerSettings() {
-      const nextSettings = collectSettingsFromUi();
-      const payload = await fetchJson(`${nextSettings.serverUrl}/api/server/settings`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          atlasOutputDir: nextSettings.atlasOutputDir,
-          tsOutputDir: nextSettings.tsOutputDir,
-        }),
-      });
-      isServerAvailable = true;
-      settings = { ...settings, ...payload.settings };
-      renderSettings();
-      hideServerWarning();
-    }
-
     function toBase64FromBytes(bytes) {
       let binary = "";
       const chunkSize = 0x8000;
@@ -465,10 +449,9 @@
 
     async function exportPayloadToServer(exportPayload) {
       const nextSettings = collectSettingsFromUi();
-      const packName = slugify(exportPayload.packName || "pack");
+      const packName = slugify(nextSettings.packName || exportPayload.packName || "pack");
       settings.packName = packName;
       renderSettings();
-      await saveServerSettings();
       appendLog(`Отправка в server: ${nextSettings.serverUrl}/api/figma/export`);
 
       try {
@@ -478,8 +461,6 @@
           body: JSON.stringify({
             packName,
             atlasBasePath: nextSettings.atlasBasePath,
-            atlasOutputDir: nextSettings.atlasOutputDir,
-            tsOutputDir: nextSettings.tsOutputDir,
             manifest: {
               ...exportPayload.manifest,
               packName,
@@ -505,8 +486,10 @@
       }
     }
 
-    function startExport() {
+    async function startExport() {
       collectSettingsFromUi();
+      await fetchServerSettings();
+
       if (!isServerAvailable) {
         appendLog("Экспорт заблокирован: server недоступен", "error");
         updateExportButtonState();
@@ -609,7 +592,7 @@
       }
 
       if (msg.type === "EXPORT_READY") {
-        const packName = slugify(msg.packName || "pack");
+        const packName = slugify(settings.packName || msg.packName || "pack");
         settings.packName = packName;
         renderSettings();
         appendLog(`PNG экспорт готов: ${msg.files.length} файлов`);
@@ -644,10 +627,18 @@
       }
     };
 
-    exportButton.addEventListener("click", startExport);
+    exportButton.addEventListener("click", () => {
+      startExport().catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        appendLog(`Ошибка запуска экспорта: ${message}`, "error");
+        isExporting = false;
+        pendingExportToServer = false;
+        updateExportButtonState();
+      });
+    });
     assetsButton.addEventListener("click", createAssetsFrame);
 
-    [atlasBasePathInput, serverUrlInput].forEach((input) => {
+    [packNameInput, atlasBasePathInput, serverUrlInput].forEach((input) => {
       input.addEventListener("change", () => {
         collectSettingsFromUi();
         savePluginSettings();

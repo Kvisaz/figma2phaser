@@ -1,6 +1,6 @@
 # Figma Phaser View Export
 
-Локальный Figma plugin для экспорта Figma view в Phaser: plugin собирает atlas PNG/JSON и генерирует TypeScript-файлы с data-константами и factory-функциями.
+Локальный Figma plugin для экспорта Figma view в Phaser: plugin собирает atlas PNG/JSON и генерирует TypeScript-файлы с class components.
 
 ## Коротко
 
@@ -8,11 +8,15 @@
 - Plugin смотрит детей первого уровня страницы и direct children фреймов, имя которых не начинается с `assets`.
 - Внутрь групп на этапе поиска root plugin не проваливается: служебные button-like ассеты внутри групп не становятся отдельными root exports.
 - После того как root `view/button` найден, его внутреннее дерево разбирается нормально: вложенные `view`, `button`, `text` и asset children сохраняют иерархию.
-- Root factory-функции собирают только direct children; вложенные `view/button` собираются private builder-функциями `buildXxx(...)`.
-- Exported root factory-функции получают prefix `create`, например `createViewGoldShop(...)` и `createButtonBack(...)`.
+- Каждый `view*` / `button*` генерируется как отдельный `Phaser.GameObjects.Container` class в `[tsOutputDir]/[packName]/views/*.ts`.
+- `[tsOutputDir]/[packName]/views/index.ts` является barrel-файлом и re-export-ит generated view classes.
+- Generated view classes используют локальные text constants и inline asset data; они не импортируют `assets.ts` и отдельный text registry.
 - `assets*` frame нужен для atlas assets. Он не является источником root view.
-- Generated data-константы не типизируются явно, чтобы IDE видела конкретные поля `children`.
-- `children` генерируется как object literal с ключами из имен Figma-детей, а не как массив.
+- Manifest сохраняет `children` как structured data, а generated classes превращают его в прямые Phaser constructors.
+
+## План работ
+
+Актуальный чеклист по class-only generation и output layout лежит в [todo.md](todo.md). Его нужно держать рядом с изменениями generator, чтобы контракт generated файлов не расходился с реализацией.
 
 ## Главные правила
 
@@ -42,6 +46,8 @@ http://localhost:3456/
 
 - `atlasOutputDir` - папку для atlas `.png/.json`;
 - `tsOutputDir` - папку для сгенерированных TypeScript-файлов.
+
+Выбор папок и ручное редактирование полей на server page сохраняются автоматически в `server/settings.local.json`.
 
 Figma plugin эти пути только показывает компактным списком. Менять `atlasOutputDir` и `tsOutputDir` нужно через server page.
 
@@ -96,16 +102,14 @@ figma-plugin-phaser-view/
 - только видимые дети первого уровня у каждого `view*` / `button*`;
 - если child тоже начинается с `view`, `button` или `text`, он обрабатывается как вложенный renderable child;
 - каждый уникальный asset как отдельный PNG;
-- для `manifest.items` и `[packName]-assets.ts` используются актуальные `x/y/width/height` детей `assets*` frame;
-- координаты children в `*.view.ts` считаются относительно bounds соответствующего `view`.
-- `name` в generated data сохраняет точное имя Figma-объекта; runtime ставит его в `GameObject.name`.
-- safe `functionName` используется только для TypeScript identifiers root factory-функций.
-- В generated `*.view.ts` создаются data-константы и factory-функции только для root `view*` / `button*` верхнего уровня.
-- Root factory-функции называются `createXxx`, чтобы не конфликтовать с локальными переменными children.
-- Вложенные `view*` / `button*` инлайнятся в `children` родительского root data и собираются private builder-функциями.
-- Private builder names выводятся напрямую из Figma names; если имена задублированы, TypeScript покажет конфликт, а Figma-структуру нужно поправить вручную.
-- `children` в generated data - object literal с ключами из имен Figma-детей, а не массив.
-- Generated data-константы не типизируются явно, чтобы IDE видела конкретные поля `children`.
+- для `manifest.items` и `[packName]/assets.ts` используются актуальные `x/y/width/height` детей `assets*` frame;
+- координаты children в `views/*.ts` считаются относительно bounds соответствующего `view`.
+- `name` из Figma ставится в `GameObject.name`.
+- safe `functionName` используется для TypeScript identifiers generated classes и compatibility `createXxx(...)`.
+- Каждый renderable `view*` / `button*` получает отдельный class file в `views/`.
+- Вложенные `view*` / `button*` создаются как nested class instances, а не private builder-функциями.
+- Text data кладется локально в файл view class и содержит только `localeMap` и `style`.
+- Asset data копируется локально в файл view class; view files не импортируют `[packName]/assets.ts`.
 
 Если имя узла заканчивается на:
 
@@ -135,10 +139,9 @@ panel.bg.nine.20
 Любой видимый узел, имя которого начинается с `button`, считается отдельным renderable view container:
 
 - в `manifest.views` у него будет `"button": true`;
-- если button лежит на верхнем уровне страницы, в generated `*.view.ts` у него будет root data-константа и root factory-функция;
-- если button вложен в другой `view*` / `button*`, отдельная data-константа и отдельная factory-функция для него не генерируются;
-- в button data будет `button: true`;
-- runtime setup выставит `container.setData("button", true)`;
+- для button генерируется отдельный class file в `views/`;
+- если button вложен в другой `view*` / `button*`, parent class импортирует и создает его class instance;
+- runtime setup выставит `this.setData("button", true)`;
 - если такой узел лежит внутри `view*` или другого `button*`, parent получит child `{ type: "view", name, button, x, y, width, height, children }`, а не прямой asset child.
 
 ### Button с детьми
@@ -156,9 +159,9 @@ viewMain
 
 Ожидаемый runtime смысл:
 
-- `viewMainData.children.buttonPlay` имеет `type: "view"` и `button: true`;
-- `viewMainData.children.buttonPlay.children` содержит asset children для `button.play.bg.nine.20` и `button.play.label`;
-- `createViewMain(scene)` вызывает private builder для `buttonPlay`, а builder собирает direct children кнопки.
+- `ButtonPlay` генерируется как отдельный class;
+- `ViewMain` импортирует `ButtonPlay` и создает его через `new ButtonPlay(...)`;
+- direct children кнопки создаются внутри constructor класса `ButtonPlay`.
 
 ### Button без детей
 
@@ -219,99 +222,55 @@ export const viewMainData = {
 Любой видимый `TEXT`-узел, имя которого начинается с `text`, считается отдельным renderable text view:
 
 - в `manifest.views` у него будет `"kind": "text"`;
-- в generated `*.text.ts` все тексты лежат в едином объекте `[packCamel]Texts`;
-- ключи `[packCamel]Texts` совпадают с точными именами Figma-узлов; небезопасные ключи генерируются quoted, например `'text 2'`;
-- отдельные text factory-функции не генерируются;
-- `localeMap` инлайнится прямо в объект text data;
-- runtime `createTextView()` рендерит его как обычный `Phaser.GameObjects.Text`;
+- отдельный `[packName].text.ts` больше не генерируется;
+- тексты, используемые конкретным view class, кладутся локально перед class в одну константу `[viewCamel]Texts`;
+- text data содержит только `localeMap` и `style`;
+- координаты и размеры text child используются в constructor/layout code, а не в text data;
+- generated class создает текст напрямую через `new Phaser.GameObjects.Text(...)`;
 - из Figma в style попадают `fontFamily`, `fontSize`, `color`, `strokeThickness` и `stroke`;
-- `scene.events.emit("onLocaleChange", { locale })` переключает текст по ключу локали из inline `localeMap`.
-
-Если нужен runtime override текста, `options.text` заменяет стартовое значение, а `options.style` дополняет style-снимок из Figma. `options.locale` задает стартовый ключ локали.
+- стартовая локаль берется из `props.locale ?? getSceneLocale(scene) ?? "ru"`.
 
 ---
 
 ## Generated view TS
 
-Актуальный формат generated `*.view.ts`:
+Актуальный формат generated view code:
 
-- exported data-константы есть только для root `view*` / `button*` верхнего уровня страницы;
-- exported factory-функции есть только для этих root views и называются `createXxx`;
-- nested `view*` / `button*` не получают отдельные data-константы;
-- nested `view*` / `button*` получают private builder-функции `buildXxx(...)` внутри того же generated файла;
-- root factory-функция собирает только direct children root view;
-- каждый private builder собирает только direct children своего `data`;
-- layout не прячется в `addChildToView` / `addNestedViewToView`: generated code явно пишет `setLeftTop(...)` и `.add(...)`;
-- `children` генерируется как object literal, а не массив;
-- если имена детей в одном parent повторяются, при генерации object literal остается последнее поле с таким именем.
-- имена private builders не уникализируются автоматически; duplicate function name считается сигналом исправить Figma names.
+- каждый renderable `view*` / `button*` получает отдельный файл `[packName]/views/[ClassName].ts`;
+- class extends `Phaser.GameObjects.Container`;
+- `[packName]/views/index.ts` является barrel-файлом с re-export classes;
+- view class files не импортируют `[packName]/assets.ts`;
+- `[packName].text.ts` не генерируется;
+- asset data копируется в локальную `[viewCamel]Assets` константу;
+- text data копируется в локальную `[viewCamel]Texts` константу и содержит только `localeMap` и `style`;
+- compatibility factory `createXxx(props)` может генерироваться рядом с class, но основной API - class.
 
-Пример:
+Упрощенный пример:
 
 ```typescript
-export const viewShopData = {
-  name: "viewShop",
-  width: 1280,
-  height: 720,
-  children: {
-    buttonBack: {
-      type: "view",
-      name: "buttonBack",
-      button: true,
-      x: 10,
-      y: 20,
-      width: 100,
-      height: 60,
-      children: {
-        iconBackGold: {
-          asset: assetsCoreAutoAssets.iconBackGold,
-          x: 8,
-          y: 8,
-          width: 75,
-          height: 80,
-        },
-      },
+const buttonSelectStyleTexts = {
+  textButtonGameStyle: {
+    localeMap: {
+      en: "Game style",
+      ru: "Game style",
+    },
+    style: {
+      fontSize: 20,
+      color: "#fff",
     },
   },
-};
+} as const;
 
-export function createViewShop(scene: Phaser.Scene): Phaser.GameObjects.Container {
-  const view = createContainerFromViewData(scene, viewShopData);
-
-  const buttonBack = buildButtonBack(scene, viewShopData.children.buttonBack);
-  setLeftTop(
-    buttonBack,
-    viewShopData.children.buttonBack.x - viewShopData.width / 2,
-    viewShopData.children.buttonBack.y - viewShopData.height / 2,
-  );
-  view.add(buttonBack);
-
-  return view;
+export class ButtonSelectStyle extends Phaser.GameObjects.Container {
+  constructor(props: IButtonSelectStyleProps) {
+    super(props.scene, 0, 0);
+    const scene = props.scene;
+    const locale = props.locale ?? getSceneLocale(scene) ?? "ru";
+    const labelMap = buttonSelectStyleTexts.textButtonGameStyle.localeMap as Record<string, string>;
+    const text = new Phaser.GameObjects.Text(scene, 0, 0, labelMap[locale] ?? "", buttonSelectStyleTexts.textButtonGameStyle.style);
+    this.add(text);
+  }
 }
-
-/**
- * Собирает вложенный view только из его direct children.
- * Родительский builder вызывает эту функцию и не разворачивает внутренности сам.
- */
-function buildButtonBack(scene: Phaser.Scene, data: any): Phaser.GameObjects.Container {
-  const view = createContainerFromViewData(scene, data);
-
-  const iconBackGold = createAssetChild(scene, data.children.iconBackGold);
-  setLeftTop(
-    iconBackGold,
-    data.children.iconBackGold.x - data.width / 2,
-    data.children.iconBackGold.y - data.height / 2,
-  );
-  view.add(iconBackGold);
-
-  return view;
-}
-```
-
-Generated data-константы намеренно не имеют `: IAutoViewData` и не используют `as const`. Это сохраняет IDE-подсказки для конкретных полей вроде:
-
-```typescript
-viewShopData.children.buttonBack.children.iconBackGold
 ```
 
 ---
@@ -482,15 +441,16 @@ manifest.warnings.unsafeNames
 ```text
 [atlasOutputDir]/[packName].png
 [atlasOutputDir]/[packName].json
-[tsOutputDir]/[packName]-assets.ts
-[tsOutputDir]/[packName]-scene.ts
-[tsOutputDir]/[packName].view.ts
-[tsOutputDir]/[packName].text.ts
-[tsOutputDir]/types.ts
-[tsOutputDir]/utils.ts
+[tsOutputDir]/[packName]/assets.ts
+[tsOutputDir]/[packName]/views/index.ts
+[tsOutputDir]/[packName]/views/[ClassName].ts
+[tsOutputDir]/[packName]/types.ts
+[tsOutputDir]/[packName]/utils/utils.ts
+[tsOutputDir]/[packName]/utils/scene-locale.ts
+[tsOutputDir]/[packName]/utils/addButtonViewInteractivity.ts
 ```
 
-`packName` берется из имени первого top-level `assets*` frame на текущей странице и проходит безопасную `slugify`-обработку.
+`packName` по умолчанию берется из имени первого top-level `assets*` frame на текущей странице, но его можно отредактировать в UI plugin. Перед экспортом значение проходит безопасную `slugify`-обработку и используется как имя папки внутри `tsOutputDir`.
 
 Пример:
 
@@ -500,14 +460,14 @@ Assets Core -> assets-core
 assets/chibi core -> assets-chibi-core
 ```
 
-Поле `packName` в UI read-only. Его нельзя задавать вручную, чтобы не перезаписать файлы другого документа старым сохраненным значением.
+Поле `packName` в UI редактируемое. Если поле пустое, plugin подставляет имя найденного `assets*` frame.
 
 ---
 
 ## Настройки
 
 - `serverUrl` - адрес companion server, по умолчанию `http://localhost:3456`;
-- `packName` - read-only имя atlas pack из первого top-level `assets*` frame;
+- `packName` - редактируемое имя atlas pack и папки generated TypeScript;
 - `atlasBasePath` - runtime URL для Phaser preload, например `./assets/atlases/`;
 - `atlasOutputDir` - абсолютная папка на диске для atlas `.png/.json`;
 - `tsOutputDir` - абсолютная папка на диске для `.ts` файлов.
@@ -516,7 +476,7 @@ assets/chibi core -> assets-chibi-core
 
 - `atlasBasePath` - путь загрузки внутри игры.
 - `atlasOutputDir` - filesystem path, куда сервер пишет atlas.
-- `tsOutputDir` - filesystem path, куда сервер пишет TypeScript.
+- `tsOutputDir` - filesystem path базовой папки, куда сервер пишет TypeScript в подпапку `[packName]`.
 
 `atlasBasePath` и `serverUrl` задаются в Figma plugin.
 
@@ -525,6 +485,8 @@ assets/chibi core -> assets-chibi-core
 ```text
 http://localhost:3456/
 ```
+
+Выбранные папки и ручные изменения input-полей автосохраняются на стороне server. Кнопка `Сохранить` нужна только для принудительного сохранения текущих значений.
 
 Figma plugin только показывает эти пути read-only preview через ellipsis. Полный путь доступен в tooltip.
 
@@ -539,10 +501,10 @@ Figma plugin только показывает эти пути read-only preview
 
 Зачем два места:
 
-- `figma.clientStorage` восстанавливает UI-настройки при следующем запуске плагина.
+- `figma.clientStorage` восстанавливает только UI-настройки плагина, например `packName`, `atlasBasePath` и `serverUrl`.
 - `server/settings.local.json` хранит filesystem paths на стороне Node.js server, где реально есть доступ к диску.
 
-Если server не запущен, UI все равно может восстановить последние настройки из Figma. Когда server снова доступен, настройки синхронизируются.
+Figma plugin не хранит и не отправляет `atlasOutputDir` / `tsOutputDir`. Он только показывает read-only preview этих путей, полученный из server.
 
 ---
 
@@ -662,11 +624,13 @@ http://localhost:3456/
 
 ### `POST /api/server/choose-directory`
 
-Открывает системный выбор папки на стороне server и сохраняет выбранный путь.
+Открывает системный выбор папки на стороне server и сохраняет выбранный путь. Если в payload переданы текущие `atlasOutputDir` и `tsOutputDir`, server сохраняет их вместе с выбранной папкой, чтобы не терять несохраненные изменения формы.
 
 ```json
 {
-  "kind": "atlas"
+  "kind": "atlas",
+  "atlasOutputDir": "/current/atlas/path",
+  "tsOutputDir": "/current/ts/path"
 }
 ```
 
@@ -674,7 +638,9 @@ http://localhost:3456/
 
 ```json
 {
-  "kind": "ts"
+  "kind": "ts",
+  "atlasOutputDir": "/current/atlas/path",
+  "tsOutputDir": "/current/ts/path"
 }
 ```
 
@@ -690,8 +656,6 @@ http://localhost:3456/
 {
   "packName": "cards-ui",
   "atlasBasePath": "./assets/atlases/",
-  "atlasOutputDir": "/path/to/public/assets/atlases",
-  "tsOutputDir": "/path/to/src/autogen",
   "manifest": {},
   "files": [
     {

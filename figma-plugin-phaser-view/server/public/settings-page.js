@@ -2,6 +2,8 @@ const atlasInput = document.getElementById("atlasOutputDir");
 const tsInput = document.getElementById("tsOutputDir");
 const logNode = document.getElementById("log");
 const serverStatus = document.getElementById("serverStatus");
+const AUTOSAVE_DELAY_MS = 500;
+let autosaveTimer = null;
 
 /**
  * Appends a timestamped message to the page log.
@@ -51,7 +53,7 @@ async function loadInitialState() {
 /**
  * Saves manually edited output paths to the server settings file.
  */
-async function saveSettings() {
+async function saveSettings(options = {}) {
   const payload = await requestJson("/api/server/settings", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -61,20 +63,43 @@ async function saveSettings() {
     }),
   });
   renderSettings(payload.settings);
-  log("Settings saved.");
+  log(options.autosave ? "Settings autosaved." : "Settings saved.");
+}
+
+/**
+ * Saves changed paths shortly after the user edits an input.
+ */
+function scheduleAutosave() {
+  if (autosaveTimer) {
+    clearTimeout(autosaveTimer);
+  }
+
+  autosaveTimer = setTimeout(() => {
+    autosaveTimer = null;
+    saveSettings({ autosave: true }).catch((error) => log("ERROR: " + error.message));
+  }, AUTOSAVE_DELAY_MS);
 }
 
 /**
  * Opens the native folder picker through the server API.
  */
 async function chooseDirectory(kind) {
+  if (autosaveTimer) {
+    clearTimeout(autosaveTimer);
+    autosaveTimer = null;
+  }
+
   const payload = await requestJson("/api/server/choose-directory", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ kind }),
+    body: JSON.stringify({
+      kind,
+      atlasOutputDir: atlasInput.value,
+      tsOutputDir: tsInput.value,
+    }),
   });
   renderSettings(payload.settings);
-  log((kind === "atlas" ? "Atlas" : "TS") + " folder: " + payload.directory);
+  log((kind === "atlas" ? "Atlas" : "TS") + " folder saved: " + payload.directory);
 }
 
 /**
@@ -107,5 +132,8 @@ document.getElementById("chooseAtlas").addEventListener("click", () => {
 document.getElementById("chooseTs").addEventListener("click", () => {
   chooseDirectory("ts").catch((error) => log("ERROR: " + error.message));
 });
+
+atlasInput.addEventListener("input", scheduleAutosave);
+tsInput.addEventListener("input", scheduleAutosave);
 
 loadInitialState().catch((error) => log("ERROR: " + error.message));

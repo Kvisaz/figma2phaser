@@ -74,12 +74,6 @@ export interface IAutoViewRefChildData extends IAutoViewData {
   readonly height: number;
 }
 
-export interface ITextViewOptions {
-  readonly text?: string;
-  readonly style?: Partial<Phaser.Types.GameObjects.Text.TextStyle>;
-  readonly locale?: string;
-}
-
 export interface IAutoTextLocaleMap {
   readonly en: string;
   readonly ru: string;
@@ -87,22 +81,8 @@ export interface IAutoTextLocaleMap {
 }
 
 export interface IAutoTextData {
-  readonly name?: string;
-  readonly x: number;
-  readonly y: number;
-  readonly width: number;
-  readonly height: number;
   readonly localeMap: IAutoTextLocaleMap;
   readonly style: Partial<Phaser.Types.GameObjects.Text.TextStyle>;
-}
-
-export interface IAutoTextChildData {
-  readonly type: string;
-  readonly text: IAutoTextData;
-  readonly x: number;
-  readonly y: number;
-  readonly width: number;
-  readonly height: number;
 }
 
 export interface IAutoTextRefChildData {

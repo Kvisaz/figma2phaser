@@ -61,6 +61,8 @@ async function handleChooseDirectoryRequest(request, response) {
         kind === "atlas" ? "Select atlas output folder" : "Select TypeScript output folder"
     );
     const settings = writeSettings({
+        atlasOutputDir: payload.atlasOutputDir,
+        tsOutputDir: payload.tsOutputDir,
         [kind === "atlas" ? "atlasOutputDir" : "tsOutputDir"]: directory,
     });
 
